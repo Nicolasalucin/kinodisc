@@ -4,6 +4,7 @@
   import { messageOf, unwrap } from "../api/client";
   import { t, i18n } from "../i18n/index.svelte";
   import { projectStore } from "../stores/project.svelte";
+  import { encoderPreference, recommendedEncoder } from "../utils/encoder";
 
   interface Props {
     episode: Episode_Serialize;
@@ -47,7 +48,10 @@
     const duration = projectStore.episodeEffectiveDuration(episode);
     const start = atMs ?? Math.max(0, Math.round(duration / 2 - 5_000));
     try {
-      const result = await unwrap(commands.renderQualitySample(project, episode.id, start, kbps));
+      // The sample uses the encoder the production window recommends.
+      const result = await unwrap(
+        commands.renderQualitySample(project, episode.id, start, kbps, encoderPreference(recommendedEncoder(project, kbps))),
+      );
       sample = result;
       original = await unwrap(commands.readImageDataUrl(result.originalPng));
       disc = await unwrap(commands.readImageDataUrl(result.discPng));

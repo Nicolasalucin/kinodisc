@@ -64,7 +64,7 @@ export const commands = {
 	 *  Encodes 10 s of an episode exactly as the disc will (bitrate from the
 	 *  plan) and measures it against the source. Only the latest sample is kept.
 	 */
-	renderQualitySample: (project: Project_Deserialize, episodeId: string, atMs: number, videoKbps: number) => typedError<QualitySample, string>(__TAURI_INVOKE("render_quality_sample", { project, episodeId, atMs, videoKbps })),
+	renderQualitySample: (project: Project_Deserialize, episodeId: string, atMs: number, videoKbps: number, encoder: EncoderPreference | null) => typedError<QualitySample, string>(__TAURI_INVOKE("render_quality_sample", { project, episodeId, atMs, videoKbps, encoder })),
 	/**
 	 *  Extrae un fotograma exacto con FFmpeg. Sin `output_png` el fichero se
 	 *  escribe en el directorio temporal de Kinodisc y se devuelve su ruta.
@@ -118,7 +118,7 @@ export const commands = {
 	 */
 	projectSplit: (project: Project_Deserialize, strategy: SplitStrategy) => typedError<SplitResult_Serialize, string>(__TAURI_INVOKE("project_split", { project, strategy })),
 	burnListDevices: () => typedError<OpticalDevice[], string>(__TAURI_INVOKE("burn_list_devices")),
-	renderStart: (project: Project_Deserialize, outputDir: string, hardwareEncoding: EncoderPreference, isoName: string | null, channel: Channel<JobEvent_Deserialize>) => typedError<RenderOutcome_Serialize, string>(__TAURI_INVOKE("render_start", { project, outputDir, hardwareEncoding, isoName, channel })),
+	renderStart: (project: Project_Deserialize, outputDir: string, hardwareEncoding: EncoderPreference, isoName: string | null, cpuUsage: CpuUsage | null, channel: Channel<JobEvent_Deserialize>) => typedError<RenderOutcome_Serialize, string>(__TAURI_INVOKE("render_start", { project, outputDir, hardwareEncoding, isoName, cpuUsage, channel })),
 	/**
 	 *  Cancela la generación activa. Los procesos FFmpeg/herramientas se crean con
 	 *  `kill_on_drop` y la bandera compartida detiene la escritura UDF, por lo que
@@ -530,6 +530,25 @@ export type Chapter_Serialize = {
 };
 
 export type CheckStatus = "pass" | "warn" | "fail" | "skipped";
+
+/**
+ *  How much of the processor a render may take. It never changes the disc:
+ *  only how many episodes encode at the same time, how many threads each
+ *  encoder gets and the priority of the encoder processes.
+ */
+export type CpuUsage = 
+/**
+ *  One episode at a time, half the threads, lower priority: the computer
+ *  stays usable and the render takes longer.
+ */
+"background" | 
+/**
+ *  The historical behaviour, plus two SD H.264 episodes at a time on
+ *  computers with 8 or more threads.
+ */
+"balanced" | 
+/**  As many episodes at a time as keep every core busy. */
+"full";
 
 export type CropMargins = {
 	left: number,

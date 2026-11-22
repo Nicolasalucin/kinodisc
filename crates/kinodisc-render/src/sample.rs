@@ -90,7 +90,9 @@ fn input_args(path: &Path, start_ms: u64, seconds: u64) -> Vec<String> {
 }
 
 /// Encodes `SAMPLE_SECONDS` of the episode from `at_ms` (offset inside its
-/// trimmed range) at `video_kbps` into `out_dir` and measures it.
+/// trimmed range) at `video_kbps` into `out_dir` and measures it. HD samples
+/// use `x264_preset` (the encoder the production window recommends), so
+/// the sample shows what that choice gives (QA 1.2.3: always `medium`).
 pub async fn quality_sample(
     project: &Project,
     project_dir: &Path,
@@ -98,6 +100,7 @@ pub async fn quality_sample(
     at_ms: u64,
     video_kbps: u32,
     out_dir: &Path,
+    x264_preset: &'static str,
 ) -> Result<QualitySample, String> {
     let episode = project
         .episodes
@@ -188,7 +191,7 @@ pub async fn quality_sample(
                 fps,
                 duration_ms: seconds * 1000,
                 hardware_encoder: None,
-                x264_preset: "medium",
+                x264_preset,
                 video_copy: false,
             };
             let spec = kinodisc_avchd::ResolutionSpec::from_config(config);

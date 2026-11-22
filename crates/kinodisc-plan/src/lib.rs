@@ -457,11 +457,9 @@ fn calculate_avchd_plan(
     let target_bytes = ((capacity_base - header_margin) as u128
         * project.budget.target_fill_ppm as u128
         / 1_000_000) as u64;
-    let menus_bytes = project.menus.len() as u64 * 2_000_000;
+    // A 60 s menu loop measured 2.4 MB on a 480i disc (QA 1.2.4).
+    let menus_bytes = project.menus.len() as u64 * 3_000_000;
     let target_bytes = target_bytes.saturating_sub(menus_bytes);
-    let es_budget = (target_bytes as u128 * 1_000_000
-        / (1_000_000 + kinodisc_avchd::AVCHD_TS_OVERHEAD_PPM as u128)) as u64;
-    let ts_overhead_bytes = target_bytes.saturating_sub(es_budget);
 
     let mut warnings = Vec::new();
     let has_unsupported_avchd_subtitles = project.episodes.iter().any(|episode| {
@@ -543,6 +541,19 @@ fn calculate_avchd_plan(
         return Err(PlanError::NoEpisodes);
     }
 
+    // The M2TS costs a fixed amount per second and per frame on top of the
+    // 5 % per byte (`ts_overhead_bytes_for`); at the low bitrates of many
+    // hours on one disc that is 15-20 % of the streams, not 5 %.
+    let fixed_ts_bytes: u64 = episodes
+        .iter()
+        .map(|episode| {
+            let audio = bytes_for(episode.duration_ms, episode.audio_kbps);
+            kinodisc_avchd::ts_overhead_bytes_for(0, audio, episode.duration_ms, config.frame_rate)
+        })
+        .sum();
+    let es_budget = (target_bytes.saturating_sub(fixed_ts_bytes) as u128 * 1_000_000
+        / (1_000_000 + kinodisc_avchd::AVCHD_TS_OVERHEAD_PPM as u128)) as u64;
+    let ts_overhead_bytes = target_bytes.saturating_sub(es_budget);
     let video_budget_bytes = es_budget.saturating_sub(audio_total);
     if video_budget_bytes == 0 {
         return Err(PlanError::NoVideoBudget);
@@ -614,7 +625,12 @@ fn calculate_avchd_plan(
         let video_bytes = bytes_for(episode.duration_ms, episode_video_kbps);
         let audio_bytes = bytes_for(episode.duration_ms, episode.audio_kbps);
         let es_bytes = video_bytes.saturating_add(audio_bytes);
-        let ts_bytes = kinodisc_avchd::ts_overhead_bytes(es_bytes);
+        let ts_bytes = kinodisc_avchd::ts_overhead_bytes_for(
+            video_bytes,
+            audio_bytes,
+            episode.duration_ms,
+            config.frame_rate,
+        );
         let estimated_bytes = es_bytes.saturating_add(ts_bytes);
         estimated_total = estimated_total.saturating_add(estimated_bytes);
         per_episode.push(EpisodeBitrate {

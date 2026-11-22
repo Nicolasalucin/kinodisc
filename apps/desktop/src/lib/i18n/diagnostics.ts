@@ -82,6 +82,11 @@ const PATTERNS: PatternRule[] = [
     values: (match) => ({ bitrate: match[1], max: match[2], capacity: match[3] }),
   },
   {
+    key: "La imagen ocupa {size} GB y no entra en un {capacity} ({limit} GB): no se puede grabar. Baja la calidad o el audio, reparte el contenido en más discos o elige un disco más grande.",
+    pattern: /La imagen ocupa ([\d.,]+) GB y no entra en un (.+?) \(([\d.,]+) GB\)/,
+    values: (match) => ({ size: match[1], capacity: match[2], limit: match[3] }),
+  },
+  {
     key: "El plan llena el {percent}% de la capacidad efectiva de {capacity}; el contenido es demasiado corto para aprovecharla.",
     pattern: /El plan llena el ([\d.,]+)% de la capacidad efectiva de (.+?);/,
     values: (match) => ({ percent: fillNumber(match[1]), capacity: match[2] }),
@@ -190,6 +195,7 @@ const LOG_TEMPLATES: Array<[string, string]> = [
   ["Intro: reutilizando caché {}", "Intro: reutilizando caché {path}"],
   ["Episodio {}: multiplexando subtítulo {} ({}, {} ms).", "Episodio {episode}: multiplexando subtítulo {index} ({language}, {delay} ms)."],
   ["Codificando {} episodios de a {} a la vez.", "Codificando {count} episodios de a {jobs} a la vez."],
+  ["Codificando {} episodios de a uno, en segundo plano.", "Codificando {count} episodios de a uno, en segundo plano."],
   ["Codificando episodio {}/{}: {}", "Codificando episodio {index}/{total}: {title}"],
   ["Episodio {}/{}: reutilizando caché de artefactos {}", "Episodio {index}/{total}: reutilizando caché de artefactos {path}"],
   ["Usando composición del editor para el menú «{}».", "Usando composición del editor para el menú «{name}»."],
@@ -294,12 +300,17 @@ const RENDER_ERROR_PREFIXES: Array<[string, string]> = [
  * as one sentence per problem in the interface language.
  */
 export function localizeProjectErrors(message: string): string | null {
-  const body = /^\s*el proyecto tiene errores:\s*([\s\S]*)$/.exec(message);
+  // Also inside a longer message ("No se puede guardar un proyecto
+  // inválido: el proyecto tiene errores: …").
+  const body = /el proyecto tiene errores:\s*([\s\S]*)$/.exec(message);
   if (!body) return null;
   const problems = [...body[1].matchAll(/\[([EW]_[A-Z0-9_]+)\]\s*(?:error|warning|aviso):\s*([^;]+)/g)].map(
     (match) => localizeDiagnostic({ code: match[1], message: match[2].trim() }),
   );
   const detail = problems.length > 0 ? problems.join(" ") : body[1];
+  if (/^\s*No se puede guardar/.test(message)) {
+    return t("El proyecto tiene un problema que impide guardarlo: {detail}", { detail });
+  }
   return t("El proyecto tiene un problema que impide generar el disco: {detail}", { detail });
 }
 

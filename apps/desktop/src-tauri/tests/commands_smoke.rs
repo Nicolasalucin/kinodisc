@@ -21,6 +21,9 @@ fn isolate_user_data() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let dir = std::env::temp_dir().join(format!("kinodisc-test-data-{}", std::process::id()));
+        // The UI cache (menu compositions, previews) too: test runs used to
+        // leave "test-project-*" folders in the real per-user cache.
+        kinodisc_desktop::commands::media::set_cache_root(dir.join("cache"));
         std::env::set_var("XDG_DATA_HOME", dir);
     });
 }
@@ -142,6 +145,7 @@ async fn render_start_forwards_job_events_and_produces_iso() {
         output.display().to_string(),
         kinodisc_toolchain::EncoderPreference::CpuOnly,
         Some("Smoke disc.iso".to_string()),
+        None,
         channel,
     )
     .await

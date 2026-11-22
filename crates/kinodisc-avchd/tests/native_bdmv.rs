@@ -111,6 +111,7 @@ async fn native_movie_with_pgs_is_verifiable() {
                 language: "spa",
             }],
             video_attr: 0x61,
+            video_aspect: kinodisc_hdmv::native::ASPECT_16_9,
         })
         .await
         .expect("native movie");
@@ -211,6 +212,7 @@ async fn native_movie_keeps_multiple_audio_tracks() {
             audio_languages: &["eng", "spa"],
             subtitles: &[],
             video_attr: 0x61,
+            video_aspect: kinodisc_hdmv::native::ASPECT_16_9,
         })
         .await
         .expect("native movie");
@@ -282,6 +284,7 @@ async fn native_menu_ig_is_verifiable() {
             audio_languages: &["eng"],
             subtitles: &[],
             video_attr: 0x61,
+            video_aspect: kinodisc_hdmv::native::ASPECT_16_9,
         })
         .await
         .expect("native movie");
@@ -370,6 +373,7 @@ async fn native_menu_ig_is_verifiable() {
             playlist_id: 1,
             expected_object: 1,
             video_attr: 0x61,
+            video_aspect: kinodisc_hdmv::native::ASPECT_16_9,
         })
         .await
         .expect("native menu");

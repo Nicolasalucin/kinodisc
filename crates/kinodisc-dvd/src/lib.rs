@@ -13,7 +13,7 @@ use kinodisc_domain::{
     AspectRatio, ButtonShapeMask, DvdProfile, FrameRange, FrameRate, MenuScaleMode, TvStandard,
     VideoScaleMode,
 };
-use kinodisc_toolchain::{resolve_binary, MEDIA_PROTOCOL_WHITELIST};
+use kinodisc_toolchain::{resolve_binary, CpuUsage, MEDIA_PROTOCOL_WHITELIST};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -275,13 +275,13 @@ pub enum EncodeError {
 #[derive(Debug, Clone)]
 pub struct DvdEncoder {
     pub ffmpeg: PathBuf,
+    /// Threads and priority of the encoder processes (never the output).
+    pub cpu: CpuUsage,
 }
 
 impl Default for DvdEncoder {
     fn default() -> Self {
-        Self {
-            ffmpeg: resolve_binary("ffmpeg"),
-        }
+        Self::new(resolve_binary("ffmpeg"))
     }
 }
 
@@ -289,7 +289,13 @@ impl DvdEncoder {
     pub fn new(ffmpeg: impl Into<PathBuf>) -> Self {
         Self {
             ffmpeg: ffmpeg.into(),
+            cpu: CpuUsage::default(),
         }
+    }
+
+    pub fn with_cpu(mut self, cpu: CpuUsage) -> Self {
+        self.cpu = cpu;
+        self
     }
 
     pub async fn encode(&self, request: &EncodeRequest) -> Result<EncodeOutputs, EncodeError> {
@@ -305,20 +311,20 @@ impl DvdEncoder {
         std::fs::create_dir_all(&request.output_dir)?;
 
         let pass1 = build_pass1_args(request);
-        run_stage(&self.ffmpeg, &pass1, "pass1", progress.as_ref()).await?;
+        run_stage(&self.ffmpeg, self.cpu, &pass1, "pass1", progress.as_ref()).await?;
 
         let pass2 = build_pass2_args(request);
-        run_stage(&self.ffmpeg, &pass2, "pass2", progress.as_ref()).await?;
+        run_stage(&self.ffmpeg, self.cpu, &pass2, "pass2", progress.as_ref()).await?;
 
         let mut audio_ac3 = Vec::with_capacity(request.audio_tracks.len());
         for index in 0..request.audio_tracks.len() {
             let audio = build_audio_args(request, index);
-            run_stage(&self.ffmpeg, &audio, "audio", progress.as_ref()).await?;
+            run_stage(&self.ffmpeg, self.cpu, &audio, "audio", progress.as_ref()).await?;
             audio_ac3.push(request.audio_ac3(index));
         }
 
         let mux = build_mux_args(request);
-        run_stage(&self.ffmpeg, &mux, "mux", progress.as_ref()).await?;
+        run_stage(&self.ffmpeg, self.cpu, &mux, "mux", progress.as_ref()).await?;
 
         Ok(EncodeOutputs {
             video_m2v: request.video_m2v(),
@@ -351,7 +357,7 @@ impl DvdEncoder {
             std::fs::create_dir_all(parent)?;
         }
         let args = build_menu_encode_args(request);
-        run_stage(&self.ffmpeg, &args, "menu", progress.as_ref()).await?;
+        run_stage(&self.ffmpeg, self.cpu, &args, "menu", progress.as_ref()).await?;
         Ok(request.output_mpg.clone())
     }
 
@@ -387,19 +393,31 @@ impl DvdEncoder {
             std::fs::create_dir_all(parent)?;
         }
         let args = build_motion_menu_args(request);
-        run_stage(&self.ffmpeg, &args, "motion-menu", progress.as_ref()).await?;
+        run_stage(
+            &self.ffmpeg,
+            self.cpu,
+            &args,
+            "motion-menu",
+            progress.as_ref(),
+        )
+        .await?;
         Ok(request.output_mpg.clone())
     }
 }
 
 async fn run_stage(
     ffmpeg: &Path,
+    cpu: CpuUsage,
     args: &[String],
     stage: &'static str,
     progress: Option<&EncodeProgressSink>,
 ) -> Result<(), EncodeError> {
-    let mut child = Command::from(kinodisc_toolchain::background_command(ffmpeg))
-        .args(args)
+    let args = kinodisc_toolchain::dc_precision_for_ffmpeg(
+        &kinodisc_toolchain::with_thread_limit(args, cpu.encoder_threads()),
+        kinodisc_toolchain::mpeg2_has_intra_dc_precision(ffmpeg),
+    );
+    let mut child = Command::from(kinodisc_toolchain::encoder_command(ffmpeg, cpu))
+        .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)

@@ -219,12 +219,15 @@ function addGuide(
       listening: false,
     }),
   );
+  // The label sits just outside its line, in the band between the guides,
+  // so cards laid out inside the safe area never cover it (QA 1.2.4).
+  const fontSize = 12;
   layer.add(
     new Konva.Text({
       x: x + 6,
-      y: y + 6,
+      y: Math.max(0, y - fontSize - 3),
       text: label,
-      fontSize: 12,
+      fontSize,
       fontFamily: "sans-serif",
       fill: color,
       opacity: 0.7,

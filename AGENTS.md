@@ -403,6 +403,54 @@ Smart Render Cache v2:
   (`PROFILE-UNKNOWN` is not blocking): it is a data disc; any other failed
   check still blocks the burn.
 
+### 20. Kinodisc 1.2.4 additions
+
+- **CPU use** (`kinodisc_toolchain::CpuUsage`: `Background`, `Balanced`
+  default, `Full`) is `RenderOptions.cpu_usage`, `render_start`'s
+  `cpu_usage` and `kinodisc-cli render --cpu`. It sets episodes at a time
+  (`dvd_jobs_for`, `hd_jobs_for`; `KINODISC_ENCODE_JOBS` still overrides),
+  `-threads` (`with_thread_limit`, half the threads in the background) and
+  the priority (`encoder_command`: `BELOW_NORMAL_PRIORITY_CLASS` on Windows,
+  `/usr/bin/nice -n 10` elsewhere). It never changes the output, so it is
+  not part of any cache key.
+- **AVCHD/Blu-ray episodes encode in parallel** like DVD: preparation
+  (audio layout, PGS) stays sequential, the encodes share a semaphore, and
+  cache publish and the concat order stay in disc order. A GPU encoder
+  always works alone.
+- **Older FFmpeg**: the MPEG-2 `intra_dc_precision` private option only
+  exists from FFmpeg 9; earlier releases take `-dc` (same 0/1/2 values).
+  The DVD `run_stage` asks the binary once
+  (`mpeg2_has_intra_dc_precision`) and rewrites the argument
+  (`dc_precision_for_ffmpeg`). Keep emitting `-intra_dc_precision` in the
+  argument builders.
+- **M2TS size**: the AVCHD/Blu-ray plan uses
+  `kinodisc_avchd::ts_overhead_bytes_for` (5 % per byte plus PAT/PMT/SDT
+  per second, a PES cost per video frame and 4 % of the audio), measured on
+  the native backend. Do not go back to a flat percentage: at low bitrates
+  the fixed part is 15–20 % of the streams. Changing the muxer's table
+  periods or PES packing means re-measuring these constants.
+- **AVCHD SD aspect**: `kinodisc_avchd::build_filter` fits the picture on
+  the display canvas (854×480 / 1024×576 for 16:9), squeezes it to the
+  stored frame and writes `setsar=N/D`. Never `setsar=N:D`: in a filter
+  graph `:` separates options, so FFmpeg reads `sar=N` with `max=D`. The
+  CLPI video entry carries the aspect code (`NativeStream::video_aspect`,
+  3 = 16:9, 2 = 4:3); the MPLS STN has no such field.
+- **Automatic menu**: when a new episode card does not fit,
+  `regridEpisodeCards` lays all cards out again, smaller, centred row by
+  row inside the title-safe area, with the font scaled to the card.
+- **HD menu clips** end with `menu_tail` (`setsar` of the episodes + field
+  order) and use `encoder_command` with the render's `CpuUsage`.
+- **HD audio layout**: `canonical_avchd_layout` replaces an `und` track
+  with the language another episode declares at the same position.
+- **Errors**: `ProjectError::Invalid` lists its diagnostics like the
+  planner ("el proyecto tiene errores: [E_…] error: …"); `messageOf` in the
+  app localizes that form everywhere.
+- **Installer**: `src-tauri/windows/hooks.nsh` (NSIS pre-install hook)
+  deletes the stray `export-bindings.exe` of 1.2.1.
+- **Image vs disc**: after the ISO is written, `warn_if_larger_than_disc`
+  compares it with `DiscCapacity::medium_bytes()` (recordable sectors ×
+  2048) and emits `W_IMAGE_LARGER_THAN_DISC`.
+
 ### 13. Localization
 
 - Spanish is the source language; English must stay complete. Run

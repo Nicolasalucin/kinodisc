@@ -7,7 +7,7 @@ use kinodisc_domain::{
     AspectRatio, AvchdResolution, AvchdVideoConfig, Diagnostic, DiscCapacity, FrameRange,
     FrameRate, H264Level, HdScan, VideoScaleMode,
 };
-use kinodisc_toolchain::{resolve_binary, MEDIA_PROTOCOL_WHITELIST};
+use kinodisc_toolchain::{resolve_binary, CpuUsage, MEDIA_PROTOCOL_WHITELIST};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use thiserror::Error;
@@ -77,6 +77,40 @@ pub fn header_margin_bytes(capacity: DiscCapacity) -> u64 {
 
 pub fn ts_overhead_bytes(bytes: u64) -> u64 {
     (bytes as u128 * AVCHD_TS_OVERHEAD_PPM as u128 / 1_000_000) as u64
+}
+
+/// PAT and PMT ten times a second plus SDT twice (FFmpeg's M2TS defaults,
+/// the native backend): 22 TS packets of 192 bytes every second.
+pub const TS_TABLE_BYTES_PER_SEC: u64 = 22 * 192;
+/// PES header and stuffing of the last TS packet: about 0.56 packet
+/// (≈108 bytes) per video frame.
+pub const TS_BYTES_PER_VIDEO_FRAME: u64 = 108;
+/// Audio PES (several AC-3 frames each) add about 4 % to the audio.
+pub const TS_AUDIO_EXTRA_PPM: u64 = 40_000;
+
+/// The bytes an episode's M2TS adds to its elementary streams. On top of the
+/// proportional TS packet cost (`AVCHD_TS_OVERHEAD_PPM`), the M2TS has a
+/// fixed cost per second and per frame that does not shrink with the
+/// bitrate: about 64 kbps at 29.97 fps. Measured on a 19.6-minute 480i
+/// episode at 361 + 96 kbps (QA 1.2.4): the MKV streams were 67.07 MB, the
+/// M2TS 79.10 MB (+17.9 %, against the 5 % assumed before; a 64-episode
+/// DVD-5 plan came out at 5.08 GB). This estimate gives 79.75 MB.
+pub fn ts_overhead_bytes_for(
+    video_bytes: u64,
+    audio_bytes: u64,
+    duration_ms: u64,
+    frame_rate: FrameRate,
+) -> u64 {
+    let proportional = ts_overhead_bytes(video_bytes.saturating_add(audio_bytes));
+    let frames = if frame_rate.is_valid() {
+        (duration_ms as f64 * frame_rate.as_f64() / 1000.0).ceil() as u64
+    } else {
+        duration_ms.div_ceil(1000) * 30
+    };
+    let fixed = duration_ms.div_ceil(1000) * TS_TABLE_BYTES_PER_SEC
+        + frames * TS_BYTES_PER_VIDEO_FRAME
+        + (audio_bytes as u128 * TS_AUDIO_EXTRA_PPM as u128 / 1_000_000) as u64;
+    proportional.saturating_add(fixed)
 }
 
 pub fn config_errors(config: &AvchdVideoConfig) -> Vec<Diagnostic> {
@@ -307,13 +341,13 @@ pub enum AvchdError {
 #[derive(Debug, Clone)]
 pub struct AvchdEncoder {
     pub ffmpeg: PathBuf,
+    /// Threads and priority of the encoder processes (never the output).
+    pub cpu: CpuUsage,
 }
 
 impl Default for AvchdEncoder {
     fn default() -> Self {
-        Self {
-            ffmpeg: resolve_binary("ffmpeg"),
-        }
+        Self::new(resolve_binary("ffmpeg"))
     }
 }
 
@@ -321,7 +355,13 @@ impl AvchdEncoder {
     pub fn new(ffmpeg: impl Into<PathBuf>) -> Self {
         Self {
             ffmpeg: ffmpeg.into(),
+            cpu: CpuUsage::default(),
         }
+    }
+
+    pub fn with_cpu(mut self, cpu: CpuUsage) -> Self {
+        self.cpu = cpu;
+        self
     }
 
     pub async fn encode(&self, request: &AvchdEncodeRequest) -> Result<AvchdOutputs, AvchdError> {
@@ -337,7 +377,7 @@ impl AvchdEncoder {
         std::fs::create_dir_all(&request.output_dir)?;
 
         let args = build_encode_args(request);
-        run_stage(&self.ffmpeg, &args, "avchd", progress.as_ref()).await?;
+        run_stage(&self.ffmpeg, self.cpu, &args, "avchd", progress.as_ref()).await?;
 
         Ok(AvchdOutputs {
             stream_mkv: request.stream_mkv(),
@@ -651,37 +691,73 @@ pub fn build_encode_args(request: &AvchdEncodeRequest) -> Vec<String> {
 
 pub const AVCHD_DEFAULT_AUDIO_KBPS: u16 = 192;
 
+/// The scale chain for an episode. Fitting (letterbox, crop) happens on the
+/// display canvas (854x480 for 16:9 480i, 1024x576 for 16:9 576i; the frame
+/// itself for HD), then the picture is squeezed to the stored frame and
+/// tagged with its sample aspect ratio, like the DVD path. QA 1.2.4: SD used
+/// to fit on the square-pixel 720x480 frame (a 16:9 film got 36-pixel bars
+/// and was stretched by 32/27) and wrote `setsar=32:27`, which FFmpeg reads
+/// as `sar=32` with `max=27`, so the stream said 27:1.
 pub fn build_filter(request: &AvchdEncodeRequest, spec: ResolutionSpec) -> String {
     let interlaced = if spec.interlaced { ":interl=1" } else { "" };
     let sar = sar_for(request.config.resolution, request.aspect);
+    let (display_width, display_height) =
+        display_canvas(request.config.resolution, request.aspect, spec);
+    let (width, height) = (spec.width, spec.height);
     let fps = format!(
         "fps={}/{}",
         request.config.frame_rate.num, request.config.frame_rate.den
     );
+    // Only the width changes between the display canvas and the stored
+    // frame, so this second scale never resamples lines (no interlace issue).
+    let squeeze = if (display_width, display_height) == (width, height) {
+        String::new()
+    } else {
+        format!("scale={width}:{height}:flags=lanczos,")
+    };
     match request.scale_mode {
         VideoScaleMode::Letterbox | VideoScaleMode::Contain => format!(
             "scale=iw*sar:ih,setsar=1,\
-scale={}:{}:force_original_aspect_ratio=decrease:flags=lanczos{},\
-pad={}:{}:(ow-iw)/2:(oh-ih)/2,\
-setsar={}:{},{},format=yuv420p",
-            spec.width, spec.height, interlaced, spec.width, spec.height, sar.0, sar.1, fps
+scale={display_width}:{display_height}:force_original_aspect_ratio=decrease:flags=lanczos{interlaced},\
+pad={display_width}:{display_height}:(ow-iw)/2:(oh-ih)/2,\
+{squeeze}setsar={}/{},{fps},format=yuv420p",
+            sar.0, sar.1
         ),
         VideoScaleMode::CropFill | VideoScaleMode::Cover => format!(
             "scale=iw*sar:ih,setsar=1,\
-scale={}:{}:force_original_aspect_ratio=increase:flags=lanczos{},\
-crop={}:{},setsar={}:{},{},format=yuv420p",
-            spec.width, spec.height, interlaced, spec.width, spec.height, sar.0, sar.1, fps
+scale={display_width}:{display_height}:force_original_aspect_ratio=increase:flags=lanczos{interlaced},\
+crop={display_width}:{display_height},\
+{squeeze}setsar={}/{},{fps},format=yuv420p",
+            sar.0, sar.1
         ),
         VideoScaleMode::Stretch => format!(
-            "scale=iw*sar:ih,setsar=1,scale={}:{}:flags=lanczos{},\
-setsar={}:{},{},format=yuv420p",
-            spec.width, spec.height, interlaced, sar.0, sar.1, fps
+            "scale=iw*sar:ih,setsar=1,scale={width}:{height}:flags=lanczos{interlaced},\
+setsar={}/{},{fps},format=yuv420p",
+            sar.0, sar.1
         ),
     }
 }
 
+/// The picture as it is shown: the stored frame widened by its sample aspect
+/// ratio (HD has square pixels).
+fn display_canvas(
+    resolution: AvchdResolution,
+    aspect: AspectRatio,
+    spec: ResolutionSpec,
+) -> (u32, u32) {
+    let (num, den) = sar_for(resolution, aspect);
+    let width = (spec.width as u64 * num as u64).div_ceil(den as u64) as u32;
+    // Even widths keep 4:2:0 chroma aligned (853.3 -> 854).
+    (width + width % 2, spec.height)
+}
+
 fn format_millis(millis: u64) -> String {
     format!("{:.3}", millis as f64 / 1000.0)
+}
+
+/// Sample aspect ratio of an AVCHD/Blu-ray picture (square pixels in HD).
+pub fn sample_aspect(resolution: AvchdResolution, aspect: AspectRatio) -> (u32, u32) {
+    sar_for(resolution, aspect)
 }
 
 fn sar_for(resolution: AvchdResolution, aspect: AspectRatio) -> (u32, u32) {
@@ -710,12 +786,14 @@ fn format_seconds(frames: u64, fps: FrameRate) -> String {
 
 async fn run_stage(
     ffmpeg: &Path,
+    cpu: CpuUsage,
     args: &[String],
     stage: &'static str,
     progress: Option<&EncodeProgressSink>,
 ) -> Result<(), AvchdError> {
-    let mut child = Command::from(kinodisc_toolchain::background_command(ffmpeg))
-        .args(args)
+    let args = kinodisc_toolchain::with_thread_limit(args, cpu.encoder_threads());
+    let mut child = Command::from(kinodisc_toolchain::encoder_command(ffmpeg, cpu))
+        .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -825,6 +903,7 @@ pub async fn concat_mkv(
     ffmpeg: &Path,
     inputs: &[PathBuf],
     output: &Path,
+    cpu: CpuUsage,
 ) -> Result<(), AvchdError> {
     if inputs.is_empty() {
         return Err(AvchdError::InvalidConfig(
@@ -879,7 +958,7 @@ pub async fn concat_mkv(
         "matroska".to_string(),
         output.display().to_string(),
     ]);
-    run_stage(ffmpeg, &args, "matroska concat", None).await?;
+    run_stage(ffmpeg, cpu, &args, "matroska concat", None).await?;
     let _ = std::fs::remove_file(&list_path);
     if !output.is_file() || output.metadata()?.len() == 0 {
         return Err(AvchdError::MissingOutput(output.display().to_string()));
@@ -1143,6 +1222,22 @@ fn directory_size(path: &Path) -> Result<u64, AvchdError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m2ts_overhead_matches_a_measured_low_bitrate_episode() {
+        // 480i, 1174.84 s, video 52 970 602 B (361 kbps), AC-3 14 098 176 B
+        // (96 kbps): FFmpeg wrote a 79 104 000 B M2TS.
+        let overhead =
+            ts_overhead_bytes_for(52_970_602, 14_098_176, 1_174_840, FrameRate::FPS_29_97);
+        let estimate = 52_970_602 + 14_098_176 + overhead;
+        assert!(estimate >= 79_104_000, "{estimate}");
+        assert!(estimate <= 79_104_000 * 102 / 100, "{estimate}");
+        // At Blu-ray bitrates the fixed part is small next to the 5 %.
+        let hd = ts_overhead_bytes_for(2_250_000_000, 96_000_000, 1_200_000, FrameRate::FPS_29_97);
+        let proportional = ts_overhead_bytes(2_346_000_000);
+        // 15 Mbps: about 0.55 % more than the proportional 5 %.
+        assert!(hd > proportional && hd < proportional * 12 / 10);
+    }
 
     fn config() -> AvchdVideoConfig {
         AvchdVideoConfig {
@@ -1603,6 +1698,31 @@ mod tests {
         });
         let args = build_encode_args(&req);
         assert!(args.windows(2).any(|pair| pair == ["-t", "16.016"]));
+    }
+
+    #[test]
+    fn sd_avchd_fits_on_the_display_canvas_and_tags_the_aspect_with_a_slash() {
+        let mut sd = request();
+        sd.config.resolution = AvchdResolution::Sd480i;
+        sd.config.frame_rate = FrameRate::FPS_29_97;
+        sd.aspect = AspectRatio::SixteenNine;
+        let spec = ResolutionSpec::from_config(&sd.config);
+        let filter = build_filter(&sd, spec);
+        assert!(filter.contains("scale=854:480:force_original_aspect_ratio=decrease"));
+        assert!(filter.contains("pad=854:480:"));
+        assert!(filter.contains("scale=720:480:flags=lanczos,setsar=32/27"));
+        assert!(!filter.contains("setsar=32:27"));
+        sd.config.resolution = AvchdResolution::Sd576i;
+        sd.config.frame_rate = FrameRate { num: 25, den: 1 };
+        sd.aspect = AspectRatio::FourThree;
+        let spec = ResolutionSpec::from_config(&sd.config);
+        let filter = build_filter(&sd, spec);
+        assert!(filter.contains("scale=768:576:force_original_aspect_ratio=decrease"));
+        assert!(filter.contains("setsar=16/15"));
+        // HD keeps square pixels and needs no squeeze.
+        let hd = build_filter(&request(), ResolutionSpec::from_config(&config()));
+        assert!(hd.contains("setsar=1/1"));
+        assert_eq!(hd.matches("scale=1280:720").count(), 1);
     }
 
     #[test]

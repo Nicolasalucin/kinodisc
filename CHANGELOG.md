@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.2.4 — 2026-11-22
+
+### Added
+
+- **Processor use** in the production window, next to the encoder: **In the background** (one episode at a time, half the threads, low priority: the computer stays responsive), **Balanced** (recommended) or **Maximum** (every core, several episodes at once; a GPU encoder still works on one episode at a time). The disc quality and size are the same with any option; the choice is remembered. `kinodisc-cli render --cpu background|balanced|full`.
+- **AVCHD and Blu-ray episodes encode side by side**, like DVD already did. One x264 encoder on 480i/576i keeps only about half of the processor busy. Measured on a 12-thread laptop (x264 slow, 480i): one at a time used 54 % of the processor at 14.2× real time; two at a time (Balanced, on 8 threads or more) 83 % at 17.7× (25 % faster); three at a time (Maximum) 92 % at 18.4× (30 % faster). A GPU encoder still works alone.
+
+### Fixed
+
+- **AVCHD 480i/576i pictures have the right shape.** The aspect ratio was written as `setsar=32:27`, which FFmpeg reads as two separate settings, so the stream said 27:1 (a player that trusts it shows a picture about 40 times wider than tall). The picture was also fitted on the 720×480 frame as if its pixels were square: a 16:9 film got black bars and, once shown at 16:9, came out stretched by 18 %; a 4:3 series was stretched to the sides. Now it is fitted on the real display shape (854×480 for 16:9), as on DVD-Video: a 16:9 film fills the screen, and a 4:3 series keeps its shape with bars at the sides. The clip info also declares 16:9 or 4:3 (it said neither). Discs made with earlier versions in 480i/576i should be made again; the render cache does not reuse the old episodes.
+- **Every imported video gets a menu button.** With the automatic menu, the fifth video imported into a project had no button (only a warning before producing). The cards are now laid out again, smaller, centred row by row and inside the title-safe area, with names that shrink with them (up to 16 videos on an NTSC menu, 12 on a PAL one, 20 in HD; for more, use a multi-page template).
+- **Switching a project from AVCHD to DVD-Video and back keeps its AVCHD format** (480i stayed 480i; it used to come back as 720p, which the disc settings cannot change).
+- **AVCHD 480i/576i menus have the same shape as the episodes** (the menu video said square pixels while the episodes said 16:9).
+- **Audio languages are kept on AVCHD and Blu-ray.** When one video had no language and another said English, every title became "undetermined"; now the disc keeps English.
+- **The planned size is shown as a ceiling ("up to …") when it is one.** Short discs are planned at the maximum bitrate, which easy pictures do not use up, so the image comes out smaller than planned (168 MB planned, 58 MB made). AVCHD and Blu-ray now show a quality word (Excellent, Good, Basic) like DVD, instead of only the resolution, and the header says SD for 480i/576i AVCHD.
+- **In the background** now says so in the production log, and every step of an AVCHD or Blu-ray production runs at low priority (the menus, the joining of the episodes and the disc multiplexing used to run at normal priority).
+- **A project with a problem says which one, in the interface language**, when producing and when saving, instead of "el proyecto tiene 1 errores de validación"; long messages are no longer cut to one line. An unsupported audio bitrate is also written under its track in the Tracks panel, not only in a tooltip.
+- **Adding a button to a full menu explains what to do** (make the buttons smaller, move them or use a multi-page template), once, instead of the same terse error twice. The safe-area labels of the menu editor are no longer covered by the buttons.
+- **The quality sample uses the encoder the production window recommends** (CPU slow for long discs), so it shows what the disc will look like.
+- **Generated menu names follow the interface language** even when the project was made in another one ("Menu principal" from a Portuguese session shows "Main menu" in English). Portuguese: about 35 more words that were still in English, and "ISO + burn".
+- **The Windows installer removes `export-bindings.exe`**, the developer tool 1.2.1 left next to the app.
+- Test runs no longer leave folders in the user's Kinodisc cache.
+- **Long AVCHD discs fit the disc again.** The plan counted the M2TS packaging as 5 % of the streams, but it also costs a fixed ~64 kbps (tables repeated ten times a second, a header per frame). At the low bitrates of many hours on one disc that is 15–20 %: 64 episodes planned for a DVD-5 came out at 5.08 GB (4.73 GB as Windows counts it) and could not be burned. The plan now reserves that space (measured on a real episode: estimate within 1 %), so those episodes get about 296 kbps instead of 362 kbps and the image fits. Short or high-bitrate discs barely change.
+- **An image larger than its disc is reported when it is made** (`W_IMAGE_LARGER_THAN_DISC`), with its size and the disc's, instead of at the burner.
+- **DVD-Video works with FFmpeg 8 and earlier** (GitHub issue #1: "Option intra_dc_precision not found"). That option only exists from FFmpeg 9; with an older FFmpeg, which most Linux distributions ship, every DVD menu and episode failed. Kinodisc now asks FFmpeg once and uses the older `-dc` option, which sets the same thing.
+
 ## 1.2.3 — 2026-11-21
 
 ### Added

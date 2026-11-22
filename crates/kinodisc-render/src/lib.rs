@@ -43,8 +43,8 @@ use kinodisc_menu::{
 use kinodisc_plan::{calculate_bitrate_plan, BitratePlan};
 use kinodisc_store::{ArtifactKey, ArtifactKind as CacheArtifactKind, CacheLookup, Store};
 use kinodisc_toolchain::{
-    detect_hardware_encoders, resolve_binary, resolve_hardware_encoder, EncoderPreference,
-    MEDIA_PROTOCOL_WHITELIST,
+    detect_hardware_encoders, resolve_binary, resolve_hardware_encoder, CpuUsage,
+    EncoderPreference, MEDIA_PROTOCOL_WHITELIST,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -68,7 +68,8 @@ pub const HDMV_MENU_PTS_90K: u64 = 54_000_000;
 
 /// Bump when the FFmpeg arguments or the encoded artifact layout change so
 /// existing cache entries are invalidated.
-const ENCODER_REV: u32 = 10;
+/// 11 (1.2.4): AVCHD 480i/576i fit on the display canvas and tag SAR with `/`.
+const ENCODER_REV: u32 = 11;
 
 /// Upper bound for a single auxiliary FFmpeg invocation (menu clip, menu audio
 /// or subtitle extraction). Encoding jobs have their own progress timeouts.
@@ -133,6 +134,9 @@ pub struct RenderOptions {
     /// BDMV muxing backend. `Auto` keeps tsMuxeR on 64-bit hosts and uses the
     /// native FFmpeg path on 32-bit hosts or when tsMuxeR is absent.
     pub mux_backend: MuxBackend,
+    /// How much of the processor the encoders may take (episodes at a time,
+    /// threads, priority). Never changes the disc.
+    pub cpu_usage: CpuUsage,
 }
 
 impl Default for RenderOptions {
@@ -143,6 +147,7 @@ impl Default for RenderOptions {
             cancel: None,
             hardware_encoding: EncoderPreference::Auto,
             mux_backend: MuxBackend::Auto,
+            cpu_usage: CpuUsage::default(),
         }
     }
 }
@@ -299,7 +304,7 @@ async fn render_dvd_project(
     ensure_not_cancelled(&cancel)?;
 
     prepare_output(&output_dir)?;
-    let encoder = DvdEncoder::default();
+    let encoder = DvdEncoder::default().with_cpu(options.cpu_usage);
 
     stage(&events, JobStage::EncodeIntro, "Codificando intro").await;
     let intro = encode_intro(
@@ -423,6 +428,7 @@ async fn render_dvd_project(
         .await;
     progress(&events, JobStage::Iso, 1000).await;
 
+    warn_if_larger_than_disc(&project, iso.size_bytes, &events, &mut warnings).await;
     let verification = verify_artifact(&iso.iso_path, &events).await;
     let _ = events
         .send(JobEventKind::Completed {
@@ -533,6 +539,29 @@ async fn emit_warnings(events: &EventSink, warnings: &[Diagnostic]) {
             })
             .await;
     }
+}
+
+/// An image larger than the chosen disc cannot be burned: say so when it is
+/// made, not at the burner (QA 1.2.4: a 5.08 GB AVCHD image for a DVD-5).
+async fn warn_if_larger_than_disc(
+    project: &Project,
+    size: u64,
+    events: &EventSink,
+    warnings: &mut Vec<Diagnostic>,
+) {
+    let capacity = project.disc.capacity;
+    let limit = capacity.medium_bytes();
+    if size <= limit {
+        return;
+    }
+    let message = format!(
+        "La imagen ocupa {:.2} GB y no entra en un {} ({:.2} GB): no se puede grabar. Baja la calidad o el audio, reparte el contenido en más discos o elige un disco más grande.",
+        size as f64 / 1e9,
+        capacity.label(),
+        limit as f64 / 1e9
+    );
+    warn(events, "W_IMAGE_LARGER_THAN_DISC", message.clone()).await;
+    warnings.push(Diagnostic::warning("W_IMAGE_LARGER_THAN_DISC", message));
 }
 
 async fn verify_artifact(
@@ -1557,7 +1586,7 @@ async fn render_avchd_project(
     ensure_not_cancelled(&cancel)?;
 
     prepare_avchd_output(&output_dir)?;
-    let encoder = AvchdEncoder::default();
+    let encoder = AvchdEncoder::default().with_cpu(options.cpu_usage);
     let hardware_capabilities = detect_hardware_encoders(&encoder.ffmpeg);
     // Hardware H.264 encoders write progressive frames only: 1080i and PsF
     // stay on x264, or a 1080i disc would carry 1080p25 (not a Blu-ray
@@ -1665,6 +1694,7 @@ async fn render_avchd_project(
     )
     .await;
     let mut reused_episodes = 0usize;
+    let mut prepared_hd: Vec<PreparedHdEpisode> = Vec::with_capacity(order.len());
     for (index, episode) in order.iter().enumerate() {
         ensure_not_cancelled(&cancel)?;
         let asset = project
@@ -1885,18 +1915,6 @@ async fn render_avchd_project(
                 ),
             )
             .await;
-        } else {
-            log(
-                &events,
-                format!(
-                    "Codificando episodio AVCHD {}/{}: {} ({} kbps)",
-                    index + 1,
-                    total,
-                    episode.title,
-                    planned_kbps
-                ),
-            )
-            .await;
         }
         let native_subtitles = if pgs_enabled {
             build_avchd_subtitle_configs(
@@ -1950,9 +1968,106 @@ async fn render_avchd_project(
             x264_preset: options.hardware_encoding.x264_preset(),
             video_copy,
         };
-        let stream_mkv = if let Some(artifact) = cached {
-            PathBuf::from(artifact.artifact_path)
-        } else {
+        prepared_hd.push(PreparedHdEpisode {
+            index,
+            title: episode.title.clone(),
+            planned_kbps,
+            request,
+            duration_ms,
+            cache_key,
+            cached: cached.map(|artifact| PathBuf::from(artifact.artifact_path)),
+        });
+        chapters.push(timeline_ms);
+        episode_start_ms.insert(episode.id, timeline_ms);
+        // Chapter::at_frame is authored in disc-rate frames (the editor's rate,
+        // which the encoder conforms to with `fps=`), not in source frames.
+        episode_fps.insert(episode.id, config.frame_rate);
+        for chapter in &episode.chapters {
+            let offset_ms = if config.frame_rate.is_valid() {
+                (chapter.at_frame as f64 * 1000.0 / config.frame_rate.as_f64()).round() as u64
+            } else {
+                0
+            };
+            if offset_ms < duration_ms {
+                chapters.push(timeline_ms + offset_ms);
+            }
+        }
+        timeline_ms = timeline_ms.saturating_add(duration_ms);
+    }
+
+    // One x264 on SD video leaves half of the CPU idle: episodes encode side
+    // by side (bounded, see `hd_encode_concurrency`) and everything after
+    // the encode (cache publish, concat order) stays in disc order.
+    let jobs = hd_encode_concurrency(
+        options.cpu_usage,
+        config.resolution.dimensions().1 <= 576,
+        hardware_encoder.is_some(),
+    );
+    let shared = Arc::new(std::sync::Mutex::new(vec![0.0f64; total]));
+    for item in prepared_hd.iter().filter(|item| item.cached.is_some()) {
+        if let Ok(mut fractions) = shared.lock() {
+            fractions[item.index] = 1.0;
+        }
+    }
+    let pending: Vec<usize> = prepared_hd
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.cached.is_none())
+        .map(|(position, _)| position)
+        .collect();
+    if jobs > 1 && pending.len() > 1 {
+        log(
+            &events,
+            format!(
+                "Codificando {} episodios de a {} a la vez.",
+                pending.len(),
+                jobs.min(pending.len())
+            ),
+        )
+        .await;
+    } else if options.cpu_usage == CpuUsage::Background && !pending.is_empty() {
+        log(
+            &events,
+            format!(
+                "Codificando {} episodios de a uno, en segundo plano.",
+                pending.len()
+            ),
+        )
+        .await;
+    }
+    let permits = Arc::new(tokio::sync::Semaphore::new(jobs));
+    let mut set = tokio::task::JoinSet::new();
+    for position in pending {
+        let item = &prepared_hd[position];
+        let encoder = encoder.clone();
+        let request = item.request.clone();
+        let events = events.clone();
+        let shared = Arc::clone(&shared);
+        let permits = Arc::clone(&permits);
+        let cancel = cancel.clone();
+        let (index, duration_ms, title, planned_kbps) = (
+            item.index,
+            item.duration_ms,
+            item.title.clone(),
+            item.planned_kbps,
+        );
+        set.spawn(async move {
+            let _permit = permits
+                .acquire_owned()
+                .await
+                .map_err(|error| RenderError::Encode(error.to_string()))?;
+            ensure_not_cancelled(&cancel)?;
+            log(
+                &events,
+                format!(
+                    "Codificando episodio AVCHD {}/{}: {} ({} kbps)",
+                    index + 1,
+                    total,
+                    title,
+                    planned_kbps
+                ),
+            )
+            .await;
             let encoded = encode_avchd_episode_with_progress(
                 &encoder,
                 &request,
@@ -1960,10 +2075,27 @@ async fn render_avchd_project(
                 &events,
                 index,
                 total,
+                Some(shared),
             )
             .await?;
-            if let (Some(store), Some(key)) = (&cache, &cache_key) {
-                match cached_artifact_path(store, key, "mkv", &encoded.stream_mkv, duration_ms)
+            Ok::<_, RenderError>((position, encoded))
+        });
+    }
+    let mut encoded_by_position: HashMap<usize, AvchdOutputs> = HashMap::new();
+    while let Some(joined) = set.join_next().await {
+        let (position, encoded) = joined
+            .map_err(|error| RenderError::Encode(format!("tarea de codificación: {error}")))??;
+        encoded_by_position.insert(position, encoded);
+    }
+    for (position, item) in prepared_hd.iter().enumerate() {
+        let stream_mkv = if let Some(path) = &item.cached {
+            path.clone()
+        } else {
+            let encoded = encoded_by_position
+                .remove(&position)
+                .ok_or_else(|| RenderError::Encode("episodio AVCHD sin codificar".to_string()))?;
+            if let (Some(store), Some(key)) = (&cache, &item.cache_key) {
+                match cached_artifact_path(store, key, "mkv", &encoded.stream_mkv, item.duration_ms)
                     .await
                 {
                     Ok(path) => path,
@@ -1982,26 +2114,10 @@ async fn render_avchd_project(
             }
         };
         stream_inputs.push(stream_mkv);
-        chapters.push(timeline_ms);
-        episode_start_ms.insert(episode.id, timeline_ms);
-        // Chapter::at_frame is authored in disc-rate frames (the editor's rate,
-        // which the encoder conforms to with `fps=`), not in source frames.
-        episode_fps.insert(episode.id, config.frame_rate);
-        for chapter in &episode.chapters {
-            let offset_ms = if config.frame_rate.is_valid() {
-                (chapter.at_frame as f64 * 1000.0 / config.frame_rate.as_f64()).round() as u64
-            } else {
-                0
-            };
-            if offset_ms < duration_ms {
-                chapters.push(timeline_ms + offset_ms);
-            }
-        }
-        timeline_ms = timeline_ms.saturating_add(duration_ms);
         progress(
             &events,
             JobStage::EncodeEpisodes,
-            (((index + 1) as f64 / total as f64) * 1000.0) as u16,
+            (((item.index + 1) as f64 / total as f64) * 1000.0) as u16,
         )
         .await;
     }
@@ -2019,9 +2135,14 @@ async fn render_avchd_project(
     // The backend (tsMuxeR or the built-in one) is chosen inside this stage.
     stage(&events, JobStage::Author, "Multiplexando el disco HD").await;
     let combined_mkv = episodes_dir.join("combined.mkv");
-    concat_mkv(&encoder.ffmpeg, &stream_inputs, &combined_mkv)
-        .await
-        .map_err(|error| RenderError::Encode(error.to_string()))?;
+    concat_mkv(
+        &encoder.ffmpeg,
+        &stream_inputs,
+        &combined_mkv,
+        options.cpu_usage,
+    )
+    .await
+    .map_err(|error| RenderError::Encode(error.to_string()))?;
     chapters.sort_unstable();
     chapters.dedup();
 
@@ -2133,7 +2254,8 @@ async fn render_avchd_project(
     let iso_path = output_dir.join("disc.iso");
     let muxer = TsMuxer::default();
     let mux_backend = options.mux_backend.resolve();
-    let mut native_muxer = (mux_backend == MuxBackend::Native).then(NativeBdmvMuxer::default);
+    let mut native_muxer = (mux_backend == MuxBackend::Native)
+        .then(|| NativeBdmvMuxer::default().with_cpu(options.cpu_usage));
     let native_subtitles: Vec<NativeMovieSubtitle<'_>> = meta_subtitles
         .iter()
         .map(|subtitle| NativeMovieSubtitle {
@@ -2168,6 +2290,7 @@ async fn render_avchd_project(
                 audio_languages: &native_audio_languages,
                 subtitles: &native_subtitles,
                 video_attr: config.bdmv_video_attr(),
+                video_aspect: clip_aspect_code(&config, project.disc.aspect),
             })
             .await
         {
@@ -2303,6 +2426,9 @@ async fn render_avchd_project(
                         interlaced: config.resolution.interlaced(),
                         psf: config.scan() == HdScan::Psf,
                         video_attr: config.bdmv_video_attr(),
+                        video_aspect: clip_aspect_code(&config, project.disc.aspect),
+                        cpu: options.cpu_usage,
+                        sar: kinodisc_avchd::sample_aspect(config.resolution, project.disc.aspect),
                         capacity: project.disc.capacity,
                         maxrate_kbps,
                         vbv_bufsize_kbps,
@@ -2461,6 +2587,7 @@ async fn render_avchd_project(
         .await;
     progress(&events, JobStage::Iso, 1000).await;
 
+    warn_if_larger_than_disc(&project, final_iso_size, &events, &mut warnings).await;
     let verification = verify_artifact(&final_iso_path, &events).await;
     let _ = events
         .send(JobEventKind::Completed {
@@ -2489,6 +2616,7 @@ async fn encode_avchd_episode_with_progress(
     events: &EventSink,
     index: usize,
     total: usize,
+    shared: Option<Arc<std::sync::Mutex<Vec<f64>>>>,
 ) -> Result<AvchdOutputs, RenderError> {
     let (sender, mut receiver) = mpsc::channel::<kinodisc_avchd::EncodeProgress>(64);
     let event_sink = events.clone();
@@ -2497,8 +2625,20 @@ async fn encode_avchd_episode_with_progress(
         while let Some(progress) = receiver.recv().await {
             let fraction = (progress.out_time_us as f64 / 1000.0 / duration).min(1.0);
             let episode_fraction = fraction.min(1.0);
-            let permille = (((index as f64 + episode_fraction) / total.max(1) as f64) * 1000.0)
-                .min(1000.0) as u16;
+            // Episodes encoded at the same time report one combined figure.
+            let done = match &shared {
+                Some(shared) => match shared.lock() {
+                    Ok(mut fractions) => {
+                        if let Some(slot) = fractions.get_mut(index) {
+                            *slot = slot.max(episode_fraction);
+                        }
+                        fractions.iter().sum::<f64>()
+                    }
+                    Err(_) => index as f64 + episode_fraction,
+                },
+                None => index as f64 + episode_fraction,
+            };
+            let permille = ((done / total.max(1) as f64) * 1000.0).min(1000.0) as u16;
             let _ = event_sink
                 .send(JobEventKind::Progress {
                     stage: JobStage::EncodeEpisodes,
@@ -2834,13 +2974,29 @@ const AVCHD_SILENT_KBPS: u16 = 192;
 fn canonical_avchd_layout(
     layouts: impl Iterator<Item = Vec<(String, kinodisc_avchd::AvchdAudioCodec)>>,
 ) -> Option<Vec<(String, kinodisc_avchd::AvchdAudioCodec)>> {
+    let layouts: Vec<_> = layouts.collect();
     let mut soundless = false;
     let mut best: Option<Vec<(String, kinodisc_avchd::AvchdAudioCodec)>> = None;
-    for layout in layouts {
+    for layout in &layouts {
         if layout.is_empty() {
             soundless = true;
         } else if best.as_ref().is_none_or(|best| best.len() < layout.len()) {
-            best = Some(layout);
+            best = Some(layout.clone());
+        }
+    }
+    // A track without a language takes the one another episode declares at
+    // the same position, so "en" is kept instead of every title becoming
+    // "und" (QA 1.2.4: the first episode's unknown language won).
+    for (index, (language, _)) in best.iter_mut().flatten().enumerate() {
+        if language.is_empty() || language.eq_ignore_ascii_case("und") {
+            if let Some(known) = layouts.iter().find_map(|layout| {
+                layout
+                    .get(index)
+                    .map(|(other, _)| other)
+                    .filter(|other| !other.is_empty() && !other.eq_ignore_ascii_case("und"))
+            }) {
+                *language = known.clone();
+            }
         }
     }
     if soundless {
@@ -3482,7 +3638,7 @@ async fn encode_episodes(
 
     // MPEG-2 encodes use few cores; several episodes run side by side
     // (bounded) and the rest of the pipeline continues in disc order.
-    let jobs = encode_concurrency();
+    let jobs = encode_concurrency(encoder.cpu);
     let shared = Arc::new(std::sync::Mutex::new(vec![0.0f64; total]));
     for item in prepared.iter().filter(|item| item.cached.is_some()) {
         if let Ok(mut fractions) = shared.lock() {
@@ -3502,6 +3658,15 @@ async fn encode_episodes(
                 "Codificando {} episodios de a {} a la vez.",
                 pending.len(),
                 jobs.min(pending.len())
+            ),
+        )
+        .await;
+    } else if encoder.cpu == CpuUsage::Background && !pending.is_empty() {
+        log(
+            events,
+            format!(
+                "Codificando {} episodios de a uno, en segundo plano.",
+                pending.len()
             ),
         )
         .await;
@@ -3650,6 +3815,16 @@ async fn encode_episodes(
     Ok(files)
 }
 
+struct PreparedHdEpisode {
+    index: usize,
+    title: String,
+    planned_kbps: u32,
+    request: AvchdEncodeRequest,
+    duration_ms: u64,
+    cache_key: Option<ArtifactKey>,
+    cached: Option<PathBuf>,
+}
+
 struct PreparedEpisode<'a> {
     index: usize,
     episode: &'a Episode,
@@ -3660,18 +3835,59 @@ struct PreparedEpisode<'a> {
     cached: Option<PathBuf>,
 }
 
-/// Episodes encoded at the same time: a quarter of the cores (MPEG-2 two
-/// pass uses ~3-4), at least 1, at most 3; KINODISC_ENCODE_JOBS overrides.
-fn encode_concurrency() -> usize {
-    if let Some(value) = kinodisc_toolchain::legacy::env_var("KINODISC_ENCODE_JOBS")
-        .and_then(|value| value.trim().parse::<usize>().ok())
-    {
-        return value.clamp(1, 8);
+/// DVD episodes encoded at the same time (MPEG-2 two pass uses ~3-4
+/// threads): one in the background, a quarter of the threads (1-3) when
+/// balanced, a third (1-4) at full use. KINODISC_ENCODE_JOBS overrides.
+fn encode_concurrency(cpu: CpuUsage) -> usize {
+    if let Some(jobs) = encode_jobs_override() {
+        return jobs;
     }
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(2);
-    (cores / 4).clamp(1, 3)
+    dvd_jobs_for(cpu, CpuUsage::logical_cores())
+}
+
+fn encode_jobs_override() -> Option<usize> {
+    kinodisc_toolchain::legacy::env_var("KINODISC_ENCODE_JOBS")
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .map(|value| value.clamp(1, 8))
+}
+
+fn dvd_jobs_for(cpu: CpuUsage, cores: usize) -> usize {
+    match cpu {
+        CpuUsage::Background => 1,
+        CpuUsage::Balanced => (cores / 4).clamp(1, 3),
+        CpuUsage::Full => (cores / 3).clamp(1, 4),
+    }
+}
+
+/// AVCHD/Blu-ray episodes encoded at the same time. One x264 on 480i/576i
+/// keeps only about half of a 12-thread CPU busy (few macroblock rows to
+/// share, interlaced coding, single-threaded decode and scaling), so SD runs
+/// two at a time from 8 threads up. 1080 x264 already fills the CPU; a GPU
+/// encoder works alone. KINODISC_ENCODE_JOBS overrides.
+fn hd_encode_concurrency(cpu: CpuUsage, standard_definition: bool, hardware: bool) -> usize {
+    if let Some(jobs) = encode_jobs_override() {
+        return jobs;
+    }
+    hd_jobs_for(
+        cpu,
+        CpuUsage::logical_cores(),
+        standard_definition,
+        hardware,
+    )
+}
+
+fn hd_jobs_for(cpu: CpuUsage, cores: usize, standard_definition: bool, hardware: bool) -> usize {
+    if hardware {
+        return 1;
+    }
+    match (cpu, standard_definition) {
+        (CpuUsage::Background, _) => 1,
+        (CpuUsage::Balanced, true) if cores >= 8 => 2,
+        (CpuUsage::Balanced, _) => 1,
+        (CpuUsage::Full, true) => (cores / 4).clamp(1, 4),
+        (CpuUsage::Full, false) if cores >= 8 => 2,
+        (CpuUsage::Full, false) => 1,
+    }
 }
 
 fn build_motion_buttons(
@@ -4427,6 +4643,17 @@ fn gop_for(standard: TvStandard) -> u16 {
 
 /// Field order for interlaced HD menu clips (`setfield`; the `-top` option
 /// was removed in FFmpeg 9). `null` keeps progressive clips unchanged.
+/// The end of every HD menu clip filter: the episodes' sample aspect ratio
+/// and, for interlaced discs, the field order.
+fn menu_tail(spec: &MenuClipSpec) -> String {
+    format!(
+        "setsar={}/{},{}",
+        spec.sar.0,
+        spec.sar.1,
+        field_filter(spec.interlaced)
+    )
+}
+
 fn field_filter(interlaced: bool) -> &'static str {
     if interlaced {
         "setfield=tff"
@@ -4460,6 +4687,12 @@ struct MenuClipSpec {
     interlaced: bool,
     psf: bool,
     video_attr: u8,
+    video_aspect: u8,
+    /// Priority of the menu encoders (low in the background mode).
+    cpu: CpuUsage,
+    /// Sample aspect ratio of the episodes (32/27 for 16:9 480i), so the
+    /// menu clips have the same shape (QA 1.2.4: they were 1:1).
+    sar: (u32, u32),
     capacity: DiscCapacity,
     maxrate_kbps: u32,
     vbv_bufsize_kbps: u32,
@@ -4516,6 +4749,19 @@ struct MenuAttachReport {
     ig_packets: usize,
 }
 
+/// Clip-info aspect code: HD is always 16:9; 480i/576i follow the disc.
+fn clip_aspect_code(config: &kinodisc_domain::AvchdVideoConfig, aspect: AspectRatio) -> u8 {
+    let standard_definition = matches!(
+        config.resolution,
+        kinodisc_domain::AvchdResolution::Sd480i | kinodisc_domain::AvchdResolution::Sd576i
+    );
+    if standard_definition && aspect == AspectRatio::FourThree {
+        kinodisc_hdmv::native::ASPECT_4_3
+    } else {
+        kinodisc_hdmv::native::ASPECT_16_9
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct MenuClipFormat {
     width: u16,
@@ -4524,6 +4770,12 @@ struct MenuClipFormat {
     interlaced: bool,
     psf: bool,
     video_attr: u8,
+    video_aspect: u8,
+    /// Priority of the menu encoders (low in the background mode).
+    cpu: CpuUsage,
+    /// Sample aspect ratio of the episodes (32/27 for 16:9 480i), so the
+    /// menu clips have the same shape (QA 1.2.4: they were 1:1).
+    sar: (u32, u32),
     capacity: DiscCapacity,
     maxrate_kbps: u32,
     vbv_bufsize_kbps: u32,
@@ -4649,6 +4901,9 @@ fn build_menu_clip_spec(
         interlaced: format.interlaced,
         psf: format.psf,
         video_attr: format.video_attr,
+        video_aspect: format.video_aspect,
+        cpu: format.cpu,
+        sar: format.sar,
         capacity: format.capacity,
         maxrate_kbps: format.maxrate_kbps,
         vbv_bufsize_kbps: format.vbv_bufsize_kbps,
@@ -4685,6 +4940,7 @@ async fn attach_native_hdmv_menu(
     let audio_path = work_dir.join("menu.ac3");
     encode_hd_menu_audio(&audio_path, spec, duration_secs).await?;
     let report = NativeBdmvMuxer::default()
+        .with_cpu(spec.cpu)
         .attach_menu(&NativeMenuRequest {
             bdmv_dir,
             work_dir,
@@ -4698,6 +4954,7 @@ async fn attach_native_hdmv_menu(
             playlist_id: playlist,
             expected_object,
             video_attr: spec.video_attr,
+            video_aspect: spec.video_aspect,
         })
         .await
         .map_err(|error| RenderError::Menu(error.to_string()))?;
@@ -4896,9 +5153,10 @@ async fn encode_menu_video_with_transition(
     let keyint = (spec.fps.as_f64().round() as u32).max(24);
     let transition_secs = (transition.duration_ms as f64 / 1000.0).min(duration_secs - 0.1);
     let background_secs = (duration_secs - transition_secs).max(0.1);
-    let mut command = Command::from(kinodisc_toolchain::background_command(resolve_binary(
-        "ffmpeg",
-    )));
+    let mut command = Command::from(kinodisc_toolchain::encoder_command(
+        resolve_binary("ffmpeg"),
+        spec.cpu,
+    ));
     command.args(["-hide_banner", "-loglevel", "error", "-y"]);
     match &spec.video {
         MenuClipVideo::Black => {
@@ -4967,7 +5225,7 @@ async fn encode_menu_video_with_transition(
         ));
         current = format!("v{index}");
     }
-    filters.push(format!("[{current}]{}[out]", field_filter(spec.interlaced)));
+    filters.push(format!("[{current}]{}[out]", menu_tail(spec)));
     command.args(["-filter_complex", &filters.join(";")]);
     command.args([
         "-map",
@@ -5019,9 +5277,10 @@ async fn encode_menu_video(
     let x264_params = format!(
         "profile=high:keyint={keyint}:min-keyint={keyint}:scenecut=0:open-gop=0:bluray-compat=1"
     );
-    let mut command = Command::from(kinodisc_toolchain::background_command(resolve_binary(
-        "ffmpeg",
-    )));
+    let mut command = Command::from(kinodisc_toolchain::encoder_command(
+        resolve_binary("ffmpeg"),
+        spec.cpu,
+    ));
     command.args(["-hide_banner", "-loglevel", "error", "-y"]);
     match &spec.video {
         MenuClipVideo::Black => {
@@ -5056,11 +5315,11 @@ async fn encode_menu_video(
                 spec.height,
                 spec.width,
                 spec.height,
-                field_filter(spec.interlaced)
+                menu_tail(spec)
             );
             command.args(["-vf", &video_filter]);
-        } else if spec.interlaced {
-            command.args(["-vf", field_filter(true)]);
+        } else {
+            command.args(["-vf", &menu_tail(spec)]);
         }
     } else {
         let mut filter_graph = vec![format!(
@@ -5085,7 +5344,7 @@ async fn encode_menu_video(
             ));
             current = format!("v{index}");
         }
-        filter_graph.push(format!("[{current}]{}[out]", field_filter(spec.interlaced)));
+        filter_graph.push(format!("[{current}]{}[out]", menu_tail(spec)));
         command.args(["-filter_complex", &filter_graph.join(";")]);
         command.args(["-map", "[out]", "-t", &format!("{duration_secs:.3}")]);
     }
@@ -5119,9 +5378,10 @@ async fn encode_hd_menu_audio(
     spec: &MenuClipSpec,
     duration_secs: f64,
 ) -> Result<(), RenderError> {
-    let mut command = Command::from(kinodisc_toolchain::background_command(resolve_binary(
-        "ffmpeg",
-    )));
+    let mut command = Command::from(kinodisc_toolchain::encoder_command(
+        resolve_binary("ffmpeg"),
+        spec.cpu,
+    ));
     command.args(["-hide_banner", "-loglevel", "error", "-y"]);
     let mut filters = Vec::new();
     if let Some(audio) = &spec.audio {
@@ -5441,6 +5701,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("test directory");
         path
+    }
+
+    #[test]
+    fn episodes_at_a_time_follow_the_cpu_choice() {
+        // DVD: the historical quarter of the threads stays the default.
+        assert_eq!(dvd_jobs_for(CpuUsage::Balanced, 12), 3);
+        assert_eq!(dvd_jobs_for(CpuUsage::Balanced, 4), 1);
+        assert_eq!(dvd_jobs_for(CpuUsage::Background, 32), 1);
+        assert_eq!(dvd_jobs_for(CpuUsage::Full, 12), 4);
+        assert_eq!(dvd_jobs_for(CpuUsage::Full, 2), 1);
+        // AVCHD SD (480i/576i): two at a time from 8 threads up.
+        assert_eq!(hd_jobs_for(CpuUsage::Balanced, 12, true, false), 2);
+        assert_eq!(hd_jobs_for(CpuUsage::Balanced, 4, true, false), 1);
+        assert_eq!(hd_jobs_for(CpuUsage::Full, 12, true, false), 3);
+        assert_eq!(hd_jobs_for(CpuUsage::Full, 4, true, false), 1);
+        assert_eq!(hd_jobs_for(CpuUsage::Background, 12, true, false), 1);
+        // 1080: one at a time unless every core is asked for.
+        assert_eq!(hd_jobs_for(CpuUsage::Balanced, 12, false, false), 1);
+        assert_eq!(hd_jobs_for(CpuUsage::Full, 12, false, false), 2);
+        // A GPU encoder always works alone.
+        assert_eq!(hd_jobs_for(CpuUsage::Full, 32, true, true), 1);
     }
 
     #[test]
@@ -5912,6 +6193,24 @@ mod tests {
         assert!(silent[0].default && !silent[1].default);
         assert_eq!(silent[0].duration_ms, 15_000);
         assert!(warnings.iter().all(|w| w.code == "W_AUDIO_LAYOUT_ADAPTED"));
+    }
+
+    #[test]
+    fn a_known_language_wins_over_und_in_the_hd_layout() {
+        use kinodisc_avchd::AvchdAudioCodec::Ac3;
+        let unknown = vec![("und".to_string(), Ac3)];
+        let english = vec![("eng".to_string(), Ac3)];
+        assert_eq!(
+            canonical_avchd_layout([unknown.clone(), english.clone(), unknown].into_iter()),
+            Some(english)
+        );
+        let spanish = vec![("spa".to_string(), Ac3)];
+        let other = vec![("fra".to_string(), Ac3)];
+        // A real language is never replaced.
+        assert_eq!(
+            canonical_avchd_layout([spanish.clone(), other].into_iter()),
+            Some(spanish)
+        );
     }
 
     #[test]

@@ -1,3 +1,5 @@
+import { localizeProjectErrors } from "../i18n/diagnostics";
+
 export type TypedResult<T, E> =
   | { status: "ok"; data: T }
   | { status: "error"; error: E };
@@ -13,5 +15,8 @@ export async function unwrap<T>(
 }
 
 export function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  // "el proyecto tiene errores: [E_…] error: …" from the engine, in the
+  // interface language and naming each problem.
+  return localizeProjectErrors(message) ?? message;
 }

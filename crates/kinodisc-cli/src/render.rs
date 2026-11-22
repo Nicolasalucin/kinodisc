@@ -3,7 +3,7 @@ use kinodisc_jobs::JobEventKind;
 use kinodisc_plan::calculate_bitrate_plan;
 use kinodisc_project::load_and_validate;
 use kinodisc_render::{render_project_with_options, RenderError, RenderOptions};
-use kinodisc_toolchain::EncoderPreference;
+use kinodisc_toolchain::{CpuUsage, EncoderPreference};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +21,18 @@ pub(crate) struct RenderArgs {
     pub(crate) avchd_folder: bool,
     /// H.264 encoder for AVCHD/Blu-ray (DVD-Video always uses MPEG-2).
     pub(crate) encoder: EncoderPreference,
+    /// How much of the processor the encoders may take.
+    pub(crate) cpu: CpuUsage,
+}
+
+/// `--cpu` values: `background`, `balanced` (default) or `full`.
+pub(crate) fn parse_cpu(value: &str) -> Option<CpuUsage> {
+    Some(match value.to_ascii_lowercase().as_str() {
+        "background" | "low" => CpuUsage::Background,
+        "balanced" | "normal" => CpuUsage::Balanced,
+        "full" | "max" | "100" => CpuUsage::Full,
+        _ => return None,
+    })
 }
 
 /// `--encoder` values: `auto`, `cpu-fast`, `cpu-medium`, `cpu-slow`, or a
@@ -164,6 +176,7 @@ pub(crate) async fn render(args: &RenderArgs) -> Result<PathBuf, String> {
             cancel: Some(Arc::clone(&cancel)),
             hardware_encoding: args.encoder,
             mux_backend: kinodisc_render::MuxBackend::Auto,
+            cpu_usage: args.cpu,
         },
         sender,
     ));
@@ -225,6 +238,7 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
     let mut mode = None;
     let mut avchd_folder = false;
     let mut encoder = EncoderPreference::Auto;
+    let mut cpu = CpuUsage::default();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -246,6 +260,15 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
                     format!(
                         "Codificador desconocido: {value}. Usa auto, cpu-fast, cpu-medium, cpu-slow, nvenc, qsv, amf, vaapi o videotoolbox."
                     )
+                })?;
+            }
+            "--cpu" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("Falta el valor de --cpu.".to_string());
+                };
+                cpu = parse_cpu(value).ok_or_else(|| {
+                    format!("Uso de CPU desconocido: {value}. Usa background, balanced o full.")
                 })?;
             }
             "--mode" => {
@@ -275,7 +298,7 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
     }
     Ok(RenderArgs {
         project: project.ok_or_else(|| {
-            "Uso: kinodisc-cli render <project.json> [-o <dir>] [--mode dvd|avchd] [--encoder <tipo>] [--folder] [--no-probe]"
+            "Uso: kinodisc-cli render <project.json> [-o <dir>] [--mode dvd|avchd] [--encoder <tipo>] [--cpu <uso>] [--folder] [--no-probe]"
                 .to_string()
         })?,
         output,
@@ -283,6 +306,7 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
         mode,
         avchd_folder,
         encoder,
+        cpu,
     })
 }
 
@@ -321,5 +345,26 @@ mod tests {
         );
         assert!(parse(&["--encoder", "turbo"]).is_err());
         assert!(parse(&["--encoder"]).is_err());
+    }
+
+    #[test]
+    fn cpu_option_parses_every_choice() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec!["p.json".to_string()];
+            args.extend(extra.iter().map(|value| value.to_string()));
+            parse_render_args(&args)
+        };
+        assert_eq!(parse(&[]).unwrap().cpu, CpuUsage::Balanced);
+        assert_eq!(
+            parse(&["--cpu", "background"]).unwrap().cpu,
+            CpuUsage::Background
+        );
+        assert_eq!(parse(&["--cpu", "FULL"]).unwrap().cpu, CpuUsage::Full);
+        assert_eq!(
+            parse(&["--cpu", "balanced"]).unwrap().cpu,
+            CpuUsage::Balanced
+        );
+        assert!(parse(&["--cpu", "turbo"]).is_err());
+        assert!(parse(&["--cpu"]).is_err());
     }
 }

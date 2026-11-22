@@ -23,7 +23,14 @@ pub struct NativeStream {
     /// BDMV video attribute (`video_format << 4 | frame_rate`); only used for
     /// video streams. Defaults to 1080p 23.976 (`0x61`).
     pub video_attr: u8,
+    /// Clip-info aspect ratio code (2 = 4:3, 3 = 16:9), video streams only.
+    pub video_aspect: u8,
 }
+
+/// Clip-info aspect ratio code for 16:9 (HD is always 16:9).
+pub const ASPECT_16_9: u8 = 3;
+/// Clip-info aspect ratio code for 4:3 (480i/576i only).
+pub const ASPECT_4_3: u8 = 2;
 
 /// Default BDMV video attribute: 1080p @ 23.976.
 pub const DEFAULT_VIDEO_ATTR: u8 = 0x61;
@@ -35,6 +42,7 @@ impl NativeStream {
             stream_type: 0x1B,
             language: None,
             video_attr: DEFAULT_VIDEO_ATTR,
+            video_aspect: ASPECT_16_9,
         }
     }
 
@@ -44,6 +52,7 @@ impl NativeStream {
             stream_type: 0x81,
             language,
             video_attr: DEFAULT_VIDEO_ATTR,
+            video_aspect: ASPECT_16_9,
         }
     }
 
@@ -53,6 +62,7 @@ impl NativeStream {
             stream_type: PMT_STREAM_TYPE_PGS,
             language,
             video_attr: DEFAULT_VIDEO_ATTR,
+            video_aspect: ASPECT_16_9,
         }
     }
 
@@ -62,12 +72,19 @@ impl NativeStream {
         self
     }
 
+    /// Overrides the clip-info aspect ratio code for a video stream.
+    pub const fn with_video_aspect(mut self, video_aspect: u8) -> Self {
+        self.video_aspect = video_aspect;
+        self
+    }
+
     pub const fn ig(pid: u16, language: Option<String>) -> Self {
         Self {
             pid,
             stream_type: PMT_STREAM_TYPE_IG,
             language,
             video_attr: DEFAULT_VIDEO_ATTR,
+            video_aspect: ASPECT_16_9,
         }
     }
 
@@ -310,7 +327,13 @@ fn build_sequence_info(streams: &[NativeStream]) -> Result<Vec<u8>, BdmvError> {
         sequence.extend_from_slice(&stream.pid.to_be_bytes());
         sequence.push(0x15);
         sequence.push(stream.coding_type());
-        sequence.extend_from_slice(&stream.attribute_bytes());
+        let mut attributes = stream.attribute_bytes();
+        if stream.coding_type() == 0x1B {
+            // Clip info: aspect_ratio (4 bits) after format/rate. It was
+            // left 0 ("reserved") until 1.2.4; tsMuxeR writes 3 for 16:9.
+            attributes[1] = stream.video_aspect << 4;
+        }
+        sequence.extend_from_slice(&attributes);
         sequence.extend_from_slice(&[0x30; 12]);
     }
     Ok(sequence)
@@ -432,6 +455,7 @@ pub fn parse_pmt_from_m2ts_prefix(prefix: &[u8]) -> Result<Vec<NativeStream>, Bd
                 stream_type,
                 language,
                 video_attr: DEFAULT_VIDEO_ATTR,
+                video_aspect: ASPECT_16_9,
             });
             offset += 5 + info_length;
         }
@@ -578,7 +602,21 @@ mod tests {
         let sequence = &clpi[248..336];
         assert_eq!(u32::from_be_bytes(sequence[..4].try_into().unwrap()), 82);
         assert_eq!(&sequence[14..16], &[0x10, 0x11]);
+        assert_eq!(sequence[18], DEFAULT_VIDEO_ATTR);
+        assert_eq!(sequence[19], 0x30, "video aspect 16:9");
         assert_eq!(sequence[65], 0x90, "PGS coding type");
         assert_eq!(&sequence[66..69], b"spa");
+        // A 4:3 SD disc declares 4:3; the playlist STN has no aspect field.
+        let clip = NativeClip {
+            clip_id: 0,
+            source_packets: 704,
+            streams: vec![NativeStream::video(0x1011)
+                .with_video_attr(0x14)
+                .with_video_aspect(ASPECT_4_3)],
+        };
+        let clpi = build_clpi(&clip).expect("clpi");
+        let sequence_start = u32::from_be_bytes(clpi[12..16].try_into().unwrap()) as usize;
+        assert_eq!(clpi[sequence_start + 18], 0x14);
+        assert_eq!(clpi[sequence_start + 19], 0x20, "video aspect 4:3");
     }
 }

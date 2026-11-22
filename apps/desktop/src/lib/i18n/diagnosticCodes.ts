@@ -90,6 +90,7 @@ export const DIAGNOSTIC_EN: Record<string, string> = {
   W_AVCHD_SD_RECOMMENDED: "More than 5 hours of content: consider SD resolution to keep quality.",
   W_AVCHD_SLICES: "Video is encoded with 4 slices per frame.",
   W_AVCHD_SUBTITLES_IGNORED: "Non-PGS bitmap subtitles (VobSub/DVB) cannot be added to AVCHD/Blu-ray yet.",
+  W_IMAGE_LARGER_THAN_DISC: "The image is larger than the disc and cannot be burned.",
   W_AVCHD_UNDERFILL: "The content is too short to fill this disc.",
   W_AVCHD_VBV_BUFSIZE: "The VBV buffer will be set to 24,000 kbps for AVCHD compatibility.",
   W_AVCHD_VBV_MAXRATE: "The VBV max rate will be set to 24,000 kbps for AVCHD compatibility.",

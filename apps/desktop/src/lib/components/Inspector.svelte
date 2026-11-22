@@ -723,7 +723,10 @@
           <button
             type="button"
             onclick={() => {
-              if (!projectStore.addButton("classicFrame")) localError = projectStore.error;
+              if (!projectStore.addButton("classicFrame")) {
+                projectStore.error = null;
+                localError = t("No queda lugar para otro botón: achica o mueve los botones, o aplica una plantilla de varias páginas.");
+              }
             }}
             class="w-full rounded-lg bg-cyan-500 px-2 py-1.5 text-[12px] font-bold text-slate-950 transition hover:bg-cyan-400"
           >

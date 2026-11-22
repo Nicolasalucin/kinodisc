@@ -513,7 +513,10 @@
           type="button"
           class="ui-btn mt-3 w-full"
           onclick={() => {
-            if (!projectStore.addButton("classicFrame")) localError = projectStore.error;
+            if (!projectStore.addButton("classicFrame")) {
+              projectStore.error = null;
+              localError = t("No queda lugar para otro botón: achica o mueve los botones, o aplica una plantilla de varias páginas.");
+            }
           }}
         >
           <Icon name="add" size={15} />{t("Añadir botón clásico")}

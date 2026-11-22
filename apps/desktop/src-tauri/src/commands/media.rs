@@ -873,6 +873,7 @@ pub async fn render_quality_sample(
     episode_id: String,
     at_ms: u32,
     video_kbps: u32,
+    encoder: Option<kinodisc_toolchain::EncoderPreference>,
 ) -> Result<kinodisc_render::sample::QualitySample, String> {
     let episode_id = episode_id
         .parse::<kinodisc_domain::EpisodeId>()
@@ -893,6 +894,7 @@ pub async fn render_quality_sample(
         u64::from(at_ms),
         video_kbps,
         &out_dir,
+        encoder.unwrap_or_default().x264_preset(),
     )
     .await
 }

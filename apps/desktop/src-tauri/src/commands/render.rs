@@ -258,6 +258,7 @@ pub async fn render_start(
     output_dir: String,
     hardware_encoding: kinodisc_toolchain::EncoderPreference,
     iso_name: Option<String>,
+    cpu_usage: Option<kinodisc_toolchain::CpuUsage>,
     channel: Channel<JobEvent>,
 ) -> Result<RenderOutcome, String> {
     let job_id = JobId::new();
@@ -305,6 +306,7 @@ pub async fn render_start(
                 composited_backgrounds: Some(composited_backgrounds),
                 cancel: Some(cancel),
                 hardware_encoding,
+                cpu_usage: cpu_usage.unwrap_or_default(),
                 ..RenderOptions::default()
             },
             sender,

@@ -76,6 +76,8 @@ pub struct NativeMovieRequest<'a> {
     pub subtitles: &'a [NativeMovieSubtitle<'a>],
     /// BDMV video attribute from `AvchdVideoConfig::bdmv_video_attr`.
     pub video_attr: u8,
+    /// Clip-info aspect code (`kinodisc_hdmv::native::ASPECT_16_9` / `ASPECT_4_3`).
+    pub video_aspect: u8,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -103,6 +105,8 @@ pub struct NativeMenuRequest<'a> {
     pub expected_object: u16,
     /// BDMV video attribute from `AvchdVideoConfig::bdmv_video_attr`.
     pub video_attr: u8,
+    /// Clip-info aspect code (`kinodisc_hdmv::native::ASPECT_16_9` / `ASPECT_4_3`).
+    pub video_aspect: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -117,13 +121,13 @@ pub struct NativeMenuReport {
 #[derive(Debug, Clone)]
 pub struct NativeBdmvMuxer {
     pub ffmpeg: PathBuf,
+    /// Priority of the muxing FFmpeg processes (low in the background mode).
+    pub cpu: kinodisc_toolchain::CpuUsage,
 }
 
 impl Default for NativeBdmvMuxer {
     fn default() -> Self {
-        Self {
-            ffmpeg: kinodisc_toolchain::resolve_binary("ffmpeg"),
-        }
+        Self::new(kinodisc_toolchain::resolve_binary("ffmpeg"))
     }
 }
 
@@ -131,7 +135,13 @@ impl NativeBdmvMuxer {
     pub fn new(ffmpeg: impl Into<PathBuf>) -> Self {
         Self {
             ffmpeg: ffmpeg.into(),
+            cpu: kinodisc_toolchain::CpuUsage::default(),
         }
+    }
+
+    pub fn with_cpu(mut self, cpu: kinodisc_toolchain::CpuUsage) -> Self {
+        self.cpu = cpu;
+        self
     }
 
     /// Muxes `combined.mkv` to the main BDMV clip and writes the base nav tree.
@@ -190,7 +200,7 @@ impl NativeBdmvMuxer {
             "mpegts".to_string(),
             stream_path.display().to_string(),
         ]);
-        run_stage(&self.ffmpeg, &args, "m2ts nativo", None).await?;
+        run_stage(&self.ffmpeg, self.cpu, &args, "m2ts nativo", None).await?;
 
         let source_packets = source_packet_count(&stream_path)?;
         let streams = resolve_streams(
@@ -198,6 +208,7 @@ impl NativeBdmvMuxer {
             request.audio_languages,
             request.subtitles,
             request.video_attr,
+            request.video_aspect,
         )?;
         let in_time = BDAV_START_45K;
         let out_time = in_time
@@ -313,7 +324,7 @@ impl NativeBdmvMuxer {
                 "mpegts".to_string(),
                 raw_path.display().to_string(),
             ]);
-            run_stage(&self.ffmpeg, &args, "menú m2ts nativo", None).await?;
+            run_stage(&self.ffmpeg, self.cpu, &args, "menú m2ts nativo", None).await?;
             let final_path = bdmv
                 .join("STREAM")
                 .join(format!("{:05}.m2ts", request.clip_id));
@@ -332,7 +343,11 @@ impl NativeBdmvMuxer {
                         .ok_or_else(|| {
                             AvchdError::InvalidConfig("duración de menú fuera de rango".into())
                         })?;
-                    let streams = resolve_menu_streams(&final_path, request.video_attr)?;
+                    let streams = resolve_menu_streams(
+                        &final_path,
+                        request.video_attr,
+                        request.video_aspect,
+                    )?;
                     let playlist = build_playlist_mpls(&NativePlaylist {
                         clip_id: request.clip_id,
                         in_time,
@@ -469,6 +484,7 @@ fn resolve_streams(
     audio_languages: &[&str],
     subtitles: &[NativeMovieSubtitle<'_>],
     video_attr: u8,
+    video_aspect: u8,
 ) -> Result<Vec<NativeStream>, AvchdError> {
     let prefix = read_pmt_prefix(path)?;
     let pmt = parse_pmt_from_m2ts_prefix(&prefix).map_err(native_error)?;
@@ -499,17 +515,26 @@ fn resolve_streams(
             stream_type: stream.stream_type,
             language,
             video_attr,
+            video_aspect,
         });
     }
     Ok(streams)
 }
 
-fn resolve_menu_streams(path: &Path, video_attr: u8) -> Result<Vec<NativeStream>, AvchdError> {
+fn resolve_menu_streams(
+    path: &Path,
+    video_attr: u8,
+    video_aspect: u8,
+) -> Result<Vec<NativeStream>, AvchdError> {
     let prefix = read_pmt_prefix(path)?;
     let streams = parse_pmt_from_m2ts_prefix(&prefix).map_err(native_error)?;
     Ok(streams
         .into_iter()
-        .map(|stream| stream.with_video_attr(video_attr))
+        .map(|stream| {
+            stream
+                .with_video_attr(video_attr)
+                .with_video_aspect(video_aspect)
+        })
         .collect())
 }
 

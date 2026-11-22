@@ -45,6 +45,17 @@ impl DiscCapacity {
         }
     }
 
+    /// What a blank disc really holds (user data sectors × 2048): an image
+    /// larger than this cannot be burned.
+    pub const fn medium_bytes(self) -> u64 {
+        match self {
+            Self::Dvd5 => 2_295_104 * 2048,
+            Self::Dvd9 => 4_173_824 * 2048,
+            Self::Bd25 => 12_219_392 * 2048,
+            Self::Bd50 => 24_438_784 * 2048,
+        }
+    }
+
     pub const fn is_blu_ray(self) -> bool {
         matches!(self, Self::Bd25 | Self::Bd50)
     }

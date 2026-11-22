@@ -180,6 +180,24 @@ ya reparte todo el espacio: cambian la calidad y el tiempo (CPU rápido tarda
 unas 0,7 veces lo que CPU medio; CPU lento, unas 2 veces). Los formatos
 entrelazados (480i, 576i, 1080i) y PsF siempre usan la CPU.
 
+### Uso del procesador
+
+**Uso del procesador**, en la misma ventana, decide cuánto de la computadora
+se lleva la producción. La calidad y el tamaño del disco son los mismos con
+cualquier opción; con la GPU se codifica un episodio a la vez.
+
+- **En segundo plano**: un episodio a la vez, con la mitad de los hilos y
+  prioridad baja. Puedes seguir usando la computadora; tarda más.
+- **Equilibrado** (recomendado): un DVD codifica varios episodios a la vez
+  según los núcleos; AVCHD en definición estándar (480i/576i) codifica dos a
+  la vez en equipos de 8 hilos o más, porque un solo codificador x264 deja la
+  mitad del procesador sin usar.
+- **Máximo**: todos los núcleos, más episodios a la vez (también en 1080).
+  La computadora puede ir lenta mientras tanto.
+
+Desde la línea de comandos: `kinodisc-cli render proyecto.json --cpu
+background|balanced|full`.
+
 El audio AC-3 admite 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384 y
 448 kbps (en 5.1, 192 o más). Con muchas horas en un disco, bajar el audio a
 96 o 128 kbps deja más espacio para el vídeo.

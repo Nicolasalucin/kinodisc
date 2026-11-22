@@ -51,6 +51,19 @@
   let busy = $state(false);
   let localError = $state<string | null>(null);
   let notice = $state<string | null>(null);
+  // Messages go away by themselves and can be closed (QA 1.2.4: the
+  // "no room" message stayed, even behind the Production window).
+  $effect(() => {
+    if (!localError && !notice) return;
+    const timer = setTimeout(
+      () => {
+        localError = null;
+        notice = null;
+      },
+      localError ? 10_000 : 4_000,
+    );
+    return () => clearTimeout(timer);
+  });
 
   const project = $derived(projectStore.project);
   const menu = $derived(projectStore.activeMenu);
@@ -68,7 +81,8 @@
   function onCanvasKey(event: KeyboardEvent) {
     if (projectStore.studioMode !== "menu" || !menu) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
-    const target = event.target as HTMLElement | null;
+    // A key sent to the window has no element as target (QA 1.2.4: TypeError).
+    const target = event.target instanceof Element ? event.target : null;
     if (target && (target.closest("input, textarea, select, [contenteditable='true']") || document.querySelector("[role=dialog][aria-modal=true]"))) return;
     const buttons = menu.buttons;
     if (event.key === "[" || event.key === "]") {
@@ -217,7 +231,10 @@
 
   function addButton() {
     if (!projectStore.addButton("classicFrame")) {
-      localError = projectStore.error ?? t("No queda espacio libre.");
+      // Said once, here, with what to do (QA 1.2.4: the same error showed
+      // under the header too and stayed behind other windows).
+      projectStore.error = null;
+      localError = t("No queda lugar para otro botón: achica o mueve los botones, o aplica una plantilla de varias páginas.");
     } else {
       notice = t("Botón añadido.");
     }
@@ -332,10 +349,21 @@
 
   {#if localError || notice}
     <div
-      class={`mx-3 mt-2 rounded-md px-3 py-1.5 text-[12px] ${localError ? "bg-rose-500/10 text-rose-200" : "bg-emerald-500/10 text-emerald-200"}`}
+      class={`mx-3 mt-2 flex items-center justify-between gap-3 rounded-md px-3 py-1.5 text-[12px] ${localError ? "bg-rose-500/10 text-rose-200" : "bg-emerald-500/10 text-emerald-200"}`}
       role={localError ? "alert" : "status"}
     >
-      {localError ?? notice}
+      <span>{localError ?? notice}</span>
+      <button
+        type="button"
+        class="shrink-0"
+        onclick={() => {
+          localError = null;
+          notice = null;
+        }}
+        aria-label={t("Cerrar")}
+      >
+        <Icon name="close" size={14} />
+      </button>
     </div>
   {/if}
 

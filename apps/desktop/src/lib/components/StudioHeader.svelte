@@ -71,7 +71,13 @@
     project
       ? [
           { dvd5: "DVD-5", dvd9: "DVD-9", bd25: "BD-25", bd50: "BD-50" }[project.disc.capacity],
-          project.disc.mode === "avchd" ? "HD" : project.disc.standard === "pal" ? "PAL" : "NTSC",
+          project.disc.mode === "avchd"
+            ? project.disc.video.kind === "avchd" && (project.disc.video.resolution === "480i" || project.disc.video.resolution === "576i")
+              ? "SD"
+              : "HD"
+            : project.disc.standard === "pal"
+              ? "PAL"
+              : "NTSC",
           project.disc.mode === "avchd" ? null : project.disc.aspect === "sixteenNine" ? "16:9" : "4:3",
         ]
           .filter(Boolean)
@@ -279,7 +285,7 @@
   {/if}
   {#if projectStore.error}
     <div class="absolute left-1/2 top-full mt-2 flex w-max max-w-[min(680px,90vw)] -translate-x-1/2 items-center justify-between gap-3 rounded-md border border-rose-500/25 bg-slate-900 bg-[linear-gradient(rgb(244_63_94/0.12),rgb(244_63_94/0.12))] px-3 py-1.5 text-[12px] text-rose-200 shadow-md" role="alert">
-      <span class="truncate" title={localizeError(projectStore.error)}>{localizeError(projectStore.error)}</span>
+      <span class="line-clamp-3" title={localizeError(projectStore.error)}>{localizeError(projectStore.error)}</span>
       <button type="button" onclick={() => (projectStore.error = null)} aria-label={t("Cerrar")}><Icon name="close" size={14} /></button>
     </div>
   {/if}

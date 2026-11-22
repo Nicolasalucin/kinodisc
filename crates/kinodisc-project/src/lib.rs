@@ -16,11 +16,22 @@ pub enum ProjectError {
     Json(#[from] serde_json::Error),
     #[error("versión de esquema {found} no soportada; se esperaba 1")]
     UnsupportedSchema { found: u32 },
-    #[error("el proyecto tiene {count} errores de validación")]
+    /// Lists every problem in the same form as the planner's error, so the
+    /// app shows them in the interface language (QA 1.2.3: "1 errores",
+    /// Spanish only, without saying which).
+    #[error("el proyecto tiene errores: {}", joined(.errors))]
     Invalid {
         count: usize,
         errors: Vec<Diagnostic>,
     },
+}
+
+fn joined(errors: &[Diagnostic]) -> String {
+    errors
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;

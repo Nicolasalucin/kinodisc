@@ -231,6 +231,57 @@ const TEMPLATE_MENU_NAMES = new Set([
   "Elegante",
 ]);
 
+/**
+ * Generated names saved in another interface language ("Menu principal" from
+ * a Portuguese session), mapped back to the Spanish source so they follow
+ * the current language too (QA 1.2.4).
+ */
+const GENERATED_NAME_SOURCES: Record<string, string> = {
+  "Avanti ›": "Siguiente ›",
+  "Back": "Volver",
+  "Cenas": "Escenas",
+  "Début": "Inicio",
+  "Einstellungen": "Ajustes",
+  "Hauptmenü": "Menú principal",
+  "Impostazioni": "Ajustes",
+  "Indietro": "Volver",
+  "Inizio": "Inicio",
+  "Main menu": "Menú principal",
+  "Menu principal": "Menú principal",
+  "Menu principale": "Menú principal",
+  "Next ›": "Siguiente ›",
+  "No subtitles": "Sin subtítulos",
+  "Ohne Untertitel": "Sin subtítulos",
+  "Próximo ›": "Siguiente ›",
+  "Retour": "Volver",
+  "Réglages": "Ajustes",
+  "Sans sous-titres": "Sin subtítulos",
+  "Scene": "Escenas",
+  "Scenes": "Escenas",
+  "Scènes": "Escenas",
+  "Sem legendas": "Sin subtítulos",
+  "Senza sottotitoli": "Sin subtítulos",
+  "Settings": "Ajustes",
+  "Start": "Inicio",
+  "Suivant ›": "Siguiente ›",
+  "Szenen": "Escenas",
+  "Voltar": "Volver",
+  "Weiter ›": "Siguiente ›",
+  "Zurück": "Volver",
+  "‹ Indietro": "‹ Anterior",
+  "‹ Previous": "‹ Anterior",
+  "‹ Précédent": "‹ Anterior",
+  "‹ Zurück": "‹ Anterior",
+  "‹ 前へ": "‹ Anterior",
+  "シーン": "Escenas",
+  "メインメニュー": "Menú principal",
+  "字幕なし": "Sin subtítulos",
+  "戻る": "Volver",
+  "次へ ›": "Siguiente ›",
+  "設定": "Ajustes",
+  "開始": "Inicio",
+};
+
 function localizeGeneratedMenus(menus: Menu_Serialize[]): void {
   // Spanish too: the first templates have English names in the engine.
   const defaults: Record<string, string> = {
@@ -245,6 +296,8 @@ function localizeGeneratedMenus(menus: Menu_Serialize[]): void {
   };
   const localize = (name: string): string => {
     if (defaults[name]) return defaults[name];
+    const source = GENERATED_NAME_SOURCES[name];
+    if (source && defaults[source]) return defaults[source];
     // Generated scene pages and buttons: "Escenas · <episode>", "Escena 3".
     if (name.startsWith("Escenas · ")) return t("Escenas") + name.slice("Escenas".length);
     // Setup page buttons: "Audio: Español", "Subtítulos: Español".
@@ -772,14 +825,33 @@ class ProjectStore {
     return Math.round((this.plan.capacityBytes * this.plan.fillPpm) / 1_000_000);
   }
 
+  /**
+   * Short content runs at the maximum bitrate, which easy pictures do not
+   * use up: the planned size is then a ceiling, and the image comes out
+   * smaller (QA 1.2.4: 168 MB planned, 58 MB made).
+   */
+  get planIsCeiling(): boolean {
+    const codes = ["W_UNDERFILL", "W_AVCHD_UNDERFILL", "W_BITRATE_CAPPED", "W_AVCHD_BITRATE_CAPPED"];
+    return Boolean(this.plan?.warnings.some((warning) => codes.includes(warning.code)));
+  }
+
   get qualityLabel(): string {
     const plan = this.plan;
     if (!plan) return t("Sin plan");
     if (!plan.feasible) return t("No cabe");
     if (plan.mode === "avchd") {
-      return plan.avchd
-        ? `${plan.avchd.resolution}${plan.avchd.resolution.startsWith("1080") || plan.avchd.resolution === "720p" ? ` ${t("HD")}` : ""}`
-        : t("Alta definición");
+      if (!plan.avchd) return t("Alta definición");
+      const resolution = plan.avchd.resolution;
+      // The same three words as DVD, at bitrates fitting each picture size.
+      const [excellent, good] =
+        resolution === "480i" || resolution === "576i"
+          ? [3_000, 1_500]
+          : resolution === "720p"
+            ? [8_000, 4_500]
+            : [15_000, 9_000];
+      const rating =
+        plan.videoKbps >= excellent ? t("Excelente") : plan.videoKbps >= good ? t("Buena") : t("Básica");
+      return `${resolution} · ${rating}`;
     }
     if (plan.profile === "halfD1") return t("Extendida Half-D1");
     if (plan.videoKbps >= 7_000) return t("Excelente");
@@ -1572,10 +1644,78 @@ class ProjectStore {
       menu.buttons.every((button) => button.action.kind === "playEpisode")
     ) {
       const previousError = this.error;
-      if (!this.addButton("thumbnailCard")) this.error = previousError;
+      // A full menu is laid out again instead; either way the "no free
+      // space" message of the first attempt is not the user's business.
+      if (!this.addButton("thumbnailCard")) {
+        this.regridEpisodeCards(menu, episode);
+        this.error = previousError;
+      }
     }
     this.touch();
     return episode;
+  }
+
+  /**
+   * The automatic menu is full: lay every episode card out again on a grid
+   * with smaller cards, centred, and add the new episode's card (QA 1.2.4:
+   * the fifth imported video got no button). Gives up below a readable card
+   * size; validation then warns and a multi-page template fits the rest.
+   */
+  private regridEpisodeCards(menu: Menu_Serialize, episode: Episode_Serialize): boolean {
+    const scale = menuScale(menu);
+    const count = menu.buttons.length + 1;
+    const gap = Math.round(16 * scale);
+    // Inside the 10 % title-safe area: the cards carry the episode names.
+    const marginX = Math.round(menu.canvas.width * 0.1);
+    const marginY = Math.round(menu.canvas.height * 0.1);
+    const usableW = menu.canvas.width - marginX * 2;
+    const usableH = menu.canvas.height - marginY * 2;
+    const minWidth = Math.round(120 * scale);
+    let best: { columns: number; rows: number; w: number; h: number } | null = null;
+    for (let columns = 1; columns <= count; columns += 1) {
+      const rows = Math.ceil(count / columns);
+      const byWidth = (usableW - gap * (columns - 1)) / columns;
+      const byHeight = ((usableH - gap * (rows - 1)) / rows) * (240 / 150);
+      const w = Math.floor(Math.min(byWidth, byHeight, 240 * scale) / 2) * 2;
+      if (w < minWidth) continue;
+      if (!best || w > best.w) best = { columns, rows, w, h: Math.floor((w * 150) / 240 / 2) * 2 };
+    }
+    if (!best) return false;
+    const { columns, rows, w, h } = best;
+    const top = Math.round((menu.canvas.height - (rows * h + (rows - 1) * gap)) / 2 / 2) * 2;
+    // Every row is centred, the last (shorter) one too.
+    const slot = (index: number) => {
+      const row = Math.floor(index / columns);
+      const inRow = Math.min(columns, count - row * columns);
+      const left = Math.round((menu.canvas.width - (inRow * w + (inRow - 1) * gap)) / 2 / 2) * 2;
+      return { x: left + (index % columns) * (w + gap), y: top + row * (h + gap), w, h };
+    };
+    // The name shrinks with the card, so long titles stay apart (QA 1.2.4:
+    // three "Big Buck Bunny…" cards on an 11-video menu).
+    const fontSize = Math.max(12, Math.round((22 * scale * w) / (240 * scale)));
+    const numberOf = (button: MenuButton_Serialize) => {
+      const action = button.action;
+      const target = action.kind === "playEpisode" ? this.episodes.find((item) => item.id === action.episode) : null;
+      return target?.number ?? Number.MAX_SAFE_INTEGER;
+    };
+    const ordered = [...menu.buttons].sort((a, b) => numberOf(a) - numberOf(b));
+    ordered.forEach((button, index) => {
+      button.rect = { ...button.rect, ...slot(index) };
+      button.fontSize = Math.min(button.fontSize, fontSize);
+    });
+    const button = this.makeButton(
+      slot(ordered.length),
+      "thumbnailCard",
+      { kind: "playEpisode", episode: episode.id },
+      episode.title,
+      episode,
+      scale,
+    );
+    button.fontSize = Math.min(button.fontSize, fontSize);
+    menu.buttons = [...menu.buttons, button];
+    this.selectedButtonId = button.id;
+    this.syncPlayAll();
+    return true;
   }
 
   updateEpisode(episodeId: string, patch: Partial<Episode_Serialize>): void {
@@ -2939,10 +3079,24 @@ class ProjectStore {
     };
   }
 
+  /**
+   * The AVCHD settings a project had before it was switched to DVD-Video, so
+   * switching back keeps 480i/576i and the aspect (QA 1.2.4: they came back
+   * as 720p, and the settings have no resolution control).
+   */
+  private previousAvchd: { projectId: string; video: Project_Serialize["disc"]["video"]; aspect: Project_Serialize["disc"]["aspect"] } | null = null;
+
   setDiscMode(mode: AuthoringMode): void {
     const project = this.project;
     if (!project || project.disc.mode === mode) return;
     const fromFps = discFps(project);
+    if (mode === "dvdVideo" && project.disc.video.kind === "avchd") {
+      this.previousAvchd = {
+        projectId: project.id,
+        video: JSON.parse(JSON.stringify(project.disc.video)),
+        aspect: project.disc.aspect,
+      };
+    }
     if (mode === "avchd") {
       project.disc.mode = "avchd";
       // HD keeps the TV standard: PAL sources stay at 25 fps (1080i), NTSC
@@ -2961,6 +3115,15 @@ class ProjectStore {
         slices: 4,
       };
       project.disc.aspect = "sixteenNine";
+      const previous = this.previousAvchd;
+      if (previous && previous.projectId === project.id && previous.video.kind === "avchd") {
+        const sd = previous.video.resolution === "480i" || previous.video.resolution === "576i";
+        // A remembered SD format is kept only on DVD media (Blu-ray has no SD here).
+        if (!bluRay || !sd) {
+          project.disc.video = { ...previous.video, vbvMaxrateKbps: bluRay ? 38_000 : 24_000, vbvBufsizeKbps: bluRay ? 35_000 : 24_000 };
+          project.disc.aspect = previous.aspect;
+        }
+      }
       project.budget = { ...AVCHD_BUDGET, maxVideoKbps: bluRay ? 38_000 : 24_000 };
       project.firstPlay = null;
     } else {

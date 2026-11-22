@@ -122,7 +122,7 @@
           // two projects with the same title in one folder keep their own image.
           const output = nativePath(folder(items[index].path));
           const isoName = `${safeFileName(items[index].name)}.iso`;
-          const outcome = await unwrap(commands.renderStart(project, output, "auto", isoName, channel));
+          const outcome = await unwrap(commands.renderStart(project, output, "auto", isoName, null, channel));
           items[index] = { ...items[index], status: "done", iso: outcome.isoPath };
         } catch (cause) {
           items[index] = {

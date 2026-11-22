@@ -177,6 +177,24 @@ all the space: quality and time change (CPU fast takes about 0.7 times as
 long as CPU medium; CPU slow, about 2 times). Interlaced (480i, 576i, 1080i)
 and PsF formats always use the CPU.
 
+### Processor use
+
+**Processor use**, in the same window, sets how much of the computer the
+production takes. The disc quality and size are the same with any option;
+with the GPU, one episode is encoded at a time.
+
+- **In the background**: one episode at a time, with half the threads and
+  low priority. You can keep using the computer; it takes longer.
+- **Balanced** (recommended): a DVD encodes several episodes at once
+  depending on the cores; standard-definition AVCHD (480i/576i) encodes two
+  at a time on computers with 8 threads or more, because a single x264
+  encoder leaves half of the processor unused.
+- **Maximum**: every core, more episodes at once (1080 too). The computer
+  may be slow in the meantime.
+
+From the command line: `kinodisc-cli render project.json --cpu
+background|balanced|full`.
+
 AC-3 audio accepts 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384 and
 448 kbps (192 or more for 5.1). With many hours on one disc, lowering the
 audio to 96 or 128 kbps leaves more room for the video.

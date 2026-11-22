@@ -168,6 +168,146 @@ impl EncoderPreference {
     }
 }
 
+/// How much of the processor a render may take. It never changes the disc:
+/// only how many episodes encode at the same time, how many threads each
+/// encoder gets and the priority of the encoder processes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum CpuUsage {
+    /// One episode at a time, half the threads, lower priority: the computer
+    /// stays usable and the render takes longer.
+    Background,
+    /// The historical behaviour, plus two SD H.264 episodes at a time on
+    /// computers with 8 or more threads.
+    #[default]
+    Balanced,
+    /// As many episodes at a time as keep every core busy.
+    Full,
+}
+
+impl CpuUsage {
+    /// Threads the computer reports (2 when it cannot tell).
+    pub fn logical_cores() -> usize {
+        std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(2)
+    }
+
+    /// The `-threads` value for each encoder, or `None` to let FFmpeg pick.
+    pub fn encoder_threads(self) -> Option<usize> {
+        match self {
+            Self::Background => Some((Self::logical_cores() / 2).max(1)),
+            Self::Balanced | Self::Full => None,
+        }
+    }
+
+    /// Encoders run below normal priority.
+    pub const fn low_priority(self) -> bool {
+        matches!(self, Self::Background)
+    }
+}
+
+/// `BELOW_NORMAL_PRIORITY_CLASS`: other programs go first, the encoder takes
+/// whatever processor time is left.
+pub const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+
+/// The command for an encoder process: like [`background_command`], and at
+/// a lower priority for [`CpuUsage::Background`] (Windows priority class;
+/// `nice -n 10` elsewhere when `/usr/bin/nice` exists).
+pub fn encoder_command(program: impl AsRef<std::ffi::OsStr>, usage: CpuUsage) -> Command {
+    if !usage.low_priority() {
+        return background_command(program);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut command = Command::new(program);
+        command.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+        command
+    }
+    #[cfg(not(windows))]
+    {
+        // A fixed absolute path, never a PATH search; `nice` execs the
+        // encoder, so the child (and kill_on_drop) is the encoder itself.
+        let nice = Path::new("/usr/bin/nice");
+        if nice.is_file() {
+            let mut command = Command::new(nice);
+            command.args(["-n", "10"]).arg(program.as_ref());
+            command
+        } else {
+            background_command(program)
+        }
+    }
+}
+
+/// Whether this FFmpeg's MPEG-2 encoder has the `intra_dc_precision` private
+/// option. Newer FFmpeg moved DC precision there and deprecated the generic
+/// `-dc`; older releases only know `-dc` (GitHub issue #1: "Option
+/// intra_dc_precision not found"). Both take 0/1/2 for 8/9/10 bits. Asked
+/// once per binary; if FFmpeg cannot be asked, the modern name is kept.
+pub fn mpeg2_has_intra_dc_precision(ffmpeg: &Path) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(known) = cache.lock().ok().and_then(|map| map.get(ffmpeg).copied()) {
+        return known;
+    }
+    let answer = background_command(ffmpeg)
+        .args(["-hide_banner", "-h", "encoder=mpeg2video"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success() && !output.stdout.is_empty())
+        .map(|output| mpeg2_help_has_intra_dc_precision(&String::from_utf8_lossy(&output.stdout)))
+        .unwrap_or(true);
+    if let Ok(mut map) = cache.lock() {
+        map.insert(ffmpeg.to_path_buf(), answer);
+    }
+    answer
+}
+
+/// Reads `ffmpeg -h encoder=mpeg2video`: an encoder help without the option
+/// (FFmpeg before the move) means `-dc`.
+pub fn mpeg2_help_has_intra_dc_precision(help: &str) -> bool {
+    if !help.contains("mpeg2video") {
+        return true;
+    }
+    help.lines()
+        .any(|line| line.trim_start().starts_with("-intra_dc_precision"))
+}
+
+/// Rewrites `-intra_dc_precision N` as `-dc N` for an FFmpeg without the
+/// private option.
+pub fn dc_precision_for_ffmpeg(args: &[String], has_intra_dc_precision: bool) -> Vec<String> {
+    args.iter()
+        .map(|arg| {
+            if !has_intra_dc_precision && arg == "-intra_dc_precision" {
+                "-dc".to_string()
+            } else {
+                arg.clone()
+            }
+        })
+        .collect()
+}
+
+/// Adds `-threads N` before the output path (the last argument) of an FFmpeg
+/// encode, unless the arguments already set it.
+pub fn with_thread_limit(args: &[String], threads: Option<usize>) -> Vec<String> {
+    let mut args = args.to_vec();
+    if let Some(threads) = threads {
+        if args.len() > 1 && !args.iter().any(|arg| arg == "-threads") {
+            let output = args.len() - 1;
+            args.splice(
+                output..output,
+                ["-threads".to_string(), threads.to_string()],
+            );
+        }
+    }
+    args
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolchainReport {
@@ -904,6 +1044,49 @@ mod tests {
             platform_binary_candidates("tsMuxeR", "macos"),
             vec!["tsMuxeR".to_string()]
         );
+    }
+
+    #[test]
+    fn older_ffmpeg_gets_dc_instead_of_intra_dc_precision() {
+        let modern = "Encoder mpeg2video [MPEG-2 video]:\n    General capabilities: dr1 delay\nMPEG-2 video encoder AVOptions:\n  -intra_vlc         <boolean>    E..V....... Use MPEG-2 intra VLC table.\n  -intra_dc_precision <int>        E..V....... Precision of the DC coefficient - 8 (from -1 to 3) (default -1)\n";
+        let older = "Encoder mpeg2video [MPEG-2 video]:\n    General capabilities: dr1 delay\nMPEG-2 video encoder AVOptions:\n  -intra_vlc         <boolean>    E..V....... Use MPEG-2 intra VLC table.\n  -luma_elim_threshold <int>      E..V....... single coefficient elimination\n";
+        assert!(mpeg2_help_has_intra_dc_precision(modern));
+        assert!(!mpeg2_help_has_intra_dc_precision(older));
+        // Output that is not the encoder help keeps the modern name.
+        assert!(mpeg2_help_has_intra_dc_precision("Unknown encoder"));
+        let args: Vec<String> = ["-g", "18", "-intra_dc_precision", "1", "out.m2v"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(dc_precision_for_ffmpeg(&args, true), args);
+        assert_eq!(
+            dc_precision_for_ffmpeg(&args, false),
+            ["-g", "18", "-dc", "1", "out.m2v"]
+                .map(String::from)
+                .to_vec()
+        );
+    }
+
+    #[test]
+    fn cpu_usage_limits_threads_only_in_the_background() {
+        assert_eq!(CpuUsage::default(), CpuUsage::Balanced);
+        assert!(CpuUsage::Background.low_priority());
+        assert!(!CpuUsage::Full.low_priority());
+        assert_eq!(CpuUsage::Balanced.encoder_threads(), None);
+        assert_eq!(CpuUsage::Full.encoder_threads(), None);
+        let half = CpuUsage::Background.encoder_threads().expect("threads");
+        assert!(half >= 1 && half <= CpuUsage::logical_cores());
+        let args: Vec<String> = ["-i", "in.mkv", "-c:v", "libx264", "out.mkv"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(with_thread_limit(&args, None), args);
+        assert_eq!(
+            with_thread_limit(&args, Some(3)),
+            ["-i", "in.mkv", "-c:v", "libx264", "-threads", "3", "out.mkv"]
+                .map(String::from)
+                .to_vec()
+        );
+        let limited = with_thread_limit(&args, Some(3));
+        assert_eq!(with_thread_limit(&limited, Some(2)), limited);
     }
 
     #[test]

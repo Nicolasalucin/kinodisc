@@ -333,6 +333,12 @@
                       <option value={kbps}>{kbps} kbps</option>
                     {/each}
                   </select>
+                  {#if !ac3TrackValid(track)}
+                    <!-- Visible, not only on hover (QA 1.2.3). -->
+                    <p class="basis-full text-[11px] text-rose-300" role="alert">
+                      {t("Esta tasa no se admite: elige otra de la lista (en 5.1, 192 kbps o más).")}
+                    </p>
+                  {/if}
                   <button
                     type="button"
                     aria-pressed={track.default}

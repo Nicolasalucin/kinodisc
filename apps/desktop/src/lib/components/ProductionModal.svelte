@@ -15,6 +15,7 @@
   import {
     commands,
     type BurnProgress_Deserialize,
+    type CpuUsage,
     type JobEvent_Deserialize,
   } from "../api/bindings";
   import { messageOf, unwrap } from "../api/client";
@@ -72,6 +73,26 @@
     return Number.isFinite(value) ? Math.min(MAX_COPIES, Math.max(1, Math.round(value))) : 1;
   }
   let encoderChoice = $state<EncoderChoice>("auto");
+  // How much of the processor the render takes; remembered on this computer.
+  const CPU_KEY = "kinodisc_cpu_usage";
+  function rememberedCpu(): CpuUsage {
+    try {
+      const value = localStorage.getItem(CPU_KEY);
+      if (value === "background" || value === "balanced" || value === "full") return value;
+    } catch {
+      // Storage unavailable: the default is fine.
+    }
+    return "balanced";
+  }
+  let cpuUsage = $state<CpuUsage>(rememberedCpu());
+  $effect(() => {
+    const value = cpuUsage;
+    try {
+      localStorage.setItem(CPU_KEY, value);
+    } catch {
+      // Not remembered, still used for this render.
+    }
+  });
   // "One disc per episode" and the like are remembered per project.
   type DiscSplit = "single" | "fitToDisc" | "perEpisode";
   const splitKey = `kinodisc_split_${projectStore.project?.id ?? ""}`;
@@ -471,7 +492,7 @@
         // name, so an "<name>.iso" made earlier is neither replaced nor removed.
         const isoName = mode === "folder" ? `${partName}.kinodisc-tmp.iso` : `${partName}.iso`;
         const outcome = await unwrap(
-          commands.renderStart(part.project, root, encoderPreference(encoderChoice), isoName, channel),
+          commands.renderStart(part.project, root, encoderPreference(encoderChoice), isoName, cpuUsage, channel),
         );
         elapsedMs += outcome.elapsedMs;
         projectStore.renderVerification = outcome.verification ?? null;
@@ -763,6 +784,32 @@
         </div>
       {/if}
 
+      {#if mode !== "existing"}
+        <div class="mt-3 rounded-md border border-slate-700 px-3 py-2">
+          <label class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+            <span class="text-[13px] text-slate-300">{t("Uso del procesador")}</span>
+            <select class="ui-input ui-input-sm min-w-0 max-w-full" bind:value={cpuUsage} disabled={busy}>
+              <option value="background">{t("En segundo plano: la computadora sigue ágil, tarda más")}</option>
+              <option value="balanced">{t("Equilibrado")} · {t("recomendado")}</option>
+              <option value="full">{t("Máximo: todos los núcleos, varios episodios a la vez")}</option>
+            </select>
+          </label>
+          <p class="ui-hint mt-1.5">
+            {#if cpuUsage === "background"}
+              {t("Un episodio a la vez, con la mitad de los hilos y prioridad baja: puedes seguir usando la computadora.")}
+            {:else if cpuUsage === "full"}
+              {t("Codifica varios episodios a la vez para ocupar todo el procesador; la computadora puede ir lenta mientras tanto.")}
+            {:else}
+              {t("Codifica más de un episodio a la vez cuando un solo codificador no llena el procesador (DVD y AVCHD en definición estándar).")}
+            {/if}
+            {#if hardwareEncoder && cpuUsage !== "background"}
+              {t("Con la GPU se codifica un episodio a la vez.")}
+            {/if}
+            {t("La calidad y el tamaño del disco son los mismos con cualquier opción.")}
+          </p>
+        </div>
+      {/if}
+
       <div class="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div class="min-w-0 space-y-3">
           {#if mode === "existing"}
@@ -1008,7 +1055,7 @@
               <div class="mt-1.5 flex items-center justify-between text-[11px]">
                 <span class="text-slate-500">{t("Ocupación")}</span>
                 <span class={projectStore.plan.feasible ? "font-mono text-emerald-300" : "font-mono text-rose-300"}>
-                  {formatPercent(projectStore.planPercent)}
+                  {projectStore.planIsCeiling ? t("hasta {size}", { size: formatPercent(projectStore.planPercent) }) : formatPercent(projectStore.planPercent)}
                 </span>
               </div>
               <div class="mt-1 flex items-center justify-between text-[11px]">

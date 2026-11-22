@@ -39,7 +39,7 @@
         {projectStore.planBusy
           ? t("Calculando…")
           : plan
-            ? `${formatBytes(projectStore.planUsedBytes)} ${t("de")} ${formatBytes(capacity)} · ${projectStore.qualityLabel}`
+            ? `${projectStore.planIsCeiling ? t("hasta {size}", { size: formatBytes(projectStore.planUsedBytes) }) : formatBytes(projectStore.planUsedBytes)} ${t("de")} ${formatBytes(capacity)} · ${projectStore.qualityLabel}`
             : project.episodes.length > 0
               ? t("El plan se actualiza automáticamente")
               : t("Añade vídeos para calcular el espacio")}

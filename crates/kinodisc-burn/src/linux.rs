@@ -227,9 +227,7 @@ impl DiscBurner for LinuxBurner {
         }
 
         if remaining_read > 0 || remaining_iso > 0 {
-            return Err(BurnError::InvalidRequest(
-                "la lectura de verificación terminó antes de cubrir el ISO".to_string(),
-            ));
+            return Err(crate::verify_incomplete(read_total, iso_size, ""));
         }
 
         let iso_hash = iso_hash

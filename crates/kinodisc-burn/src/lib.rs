@@ -470,11 +470,53 @@ pub enum BurnError {
     Json(#[from] serde_json::Error),
     #[error("error COM/IMAPI2: {0}")]
     Imapi(String),
+    #[error("la grabación terminó, pero la verificación no pudo leer todo el disco: {0}")]
+    VerifyIncomplete(String),
+}
+
+/// The read-back stopped before the end of the image. The burn itself had
+/// finished; the figures (and `detail`, what the system said about the
+/// drive) go into the message so a report says how far it got.
+pub fn verify_incomplete(read_bytes: u64, iso_bytes: u64, detail: &str) -> BurnError {
+    let percent = if iso_bytes == 0 {
+        0.0
+    } else {
+        read_bytes.min(iso_bytes) as f64 * 100.0 / iso_bytes as f64
+    };
+    let mut text = format!(
+        "se leyeron {read_bytes} de {iso_bytes} bytes ({percent:.1} %, sector {} de {})",
+        read_bytes / DVD_SECTOR_BYTES,
+        iso_bytes.div_ceil(DVD_SECTOR_BYTES)
+    );
+    let detail = detail.trim();
+    if !detail.is_empty() {
+        text.push_str("; ");
+        text.push_str(detail);
+    }
+    BurnError::VerifyIncomplete(text)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_incomplete_read_back_says_how_far_it_got() {
+        let text =
+            verify_incomplete(430_000_128, 4_436_721_664, "\\\\.\\H: fin de datos").to_string();
+        assert!(
+            text.starts_with("la grabación terminó, pero la verificación"),
+            "{text}"
+        );
+        assert!(
+            text.contains("se leyeron 430000128 de 4436721664 bytes (9.7 %"),
+            "{text}"
+        );
+        assert!(text.contains("sector 209961 de 2166368"), "{text}");
+        assert!(text.ends_with("fin de datos"), "{text}");
+        let plain = verify_incomplete(0, 0, "  ").to_string();
+        assert!(plain.ends_with("(0.0 %, sector 0 de 0)"), "{plain}");
+    }
 
     #[test]
     fn allowlist_compares_normalized_devices() {

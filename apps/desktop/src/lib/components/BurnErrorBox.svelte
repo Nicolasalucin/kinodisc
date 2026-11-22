@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getVersion } from "@tauri-apps/api/app";
+  import { commands } from "../api/bindings";
   import { t } from "../i18n/index.svelte";
   import { burnDiagnostics, explainBurnError } from "../i18n/burnErrors";
 
@@ -8,17 +9,21 @@
     action,
     device = "",
     image = null,
+    extra = [],
     onerase,
   }: {
     message: string;
     action: string;
     device?: string;
     image?: string | null;
+    /** More facts for "Copy details" (drive, speed, progress). */
+    extra?: string[];
     onerase?: () => void;
   } = $props();
 
   const explanation = $derived(explainBurnError(message));
   let copied = $state(false);
+  let logsError = $state<string | null>(null);
 
   async function copyDetails() {
     let appVersion = "?";
@@ -28,12 +33,18 @@
       // Unknown version: still useful.
     }
     try {
-      await navigator.clipboard.writeText(burnDiagnostics({ appVersion, action, device, image, message }));
+      await navigator.clipboard.writeText(burnDiagnostics({ appVersion, action, device, image, message, extra }));
       copied = true;
       setTimeout(() => (copied = false), 2500);
     } catch {
       copied = false;
     }
+  }
+
+  /** The folder with one log per burn, erase and production. */
+  async function openLogs() {
+    const result = await commands.logsOpen();
+    logsError = result.status === "error" ? result.error : null;
   }
 </script>
 
@@ -55,5 +66,9 @@
     <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost" onclick={copyDetails}>
       {copied ? t("Copiado") : t("Copiar detalles")}
     </button>
+    <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost" onclick={openLogs}>{t("Abrir registros")}</button>
   </div>
+  {#if logsError}
+    <p class="mt-1 break-words text-[11px] text-rose-100/70">{logsError}</p>
+  {/if}
 </div>

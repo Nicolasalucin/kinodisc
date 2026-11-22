@@ -149,6 +149,11 @@ export const commands = {
 	dataIsoCancel: () => typedError<null, string>(__TAURI_INVOKE("data_iso_cancel")),
 	openFolder: (path: string) => typedError<null, string>(__TAURI_INVOKE("open_folder", { path })),
 	/**
+	 *  Opens the folder with the production, burn and erase logs (see
+	 *  `joblog`), creating it when nothing has been logged yet.
+	 */
+	logsOpen: () => typedError<null, string>(__TAURI_INVOKE("logs_open")),
+	/**
 	 *  Shuts the computer down ("Shut down when done" after a long production;
 	 *  the app shows a 60 s countdown with Cancel before calling this). Fixed
 	 *  arguments and absolute system paths only: a planted `shutdown` next to

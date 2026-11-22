@@ -30,7 +30,7 @@ pub use project::{
 pub use render::{render_cancel, render_export_folder, render_start};
 pub use store::{job_history_list, recent_project_forget, recent_projects_list};
 pub use system::{
-    open_folder, open_release_page, system_fonts, system_shutdown, toolchain_install,
+    logs_open, open_folder, open_release_page, system_fonts, system_shutdown, toolchain_install,
     toolchain_install_options, toolchain_needs_install, tools_doctor, update_check,
 };
 pub use verify::verify_iso;

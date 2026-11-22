@@ -1,8 +1,10 @@
+use crate::joblog::JobLog;
 use chrono::Utc;
-use kinodisc_domain::{JobId, Project};
-use kinodisc_jobs::{JobEvent, JobEventKind};
+use kinodisc_domain::{AuthoringMode, JobId, Project};
+use kinodisc_jobs::{JobEvent, JobEventKind, LogLevel};
 use kinodisc_render::{render_project_with_options, RenderError, RenderOptions, RenderOutcome};
 use kinodisc_store::{NewJobHistory, Store};
+use kinodisc_toolchain::{CpuUsage, EncoderPreference};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -294,6 +296,17 @@ pub async fn render_start(
     let started = Instant::now();
     let job_name = project.name.clone();
     let disc_kind = project.disc.capacity.label().to_string();
+    let mut log = JobLog::create("produccion");
+    log.line(format!(
+        "Proyecto «{}»: {} {}, {} episodios; codificador {}; procesador {}",
+        project.name,
+        mode_label(project.disc.mode),
+        disc_kind,
+        project.episodes.len(),
+        encoder_label(hardware_encoding),
+        cpu_label(cpu_usage.unwrap_or_default())
+    ));
+    log.line(format!("Carpeta de salida: {}", output_root.display()));
     let cancel_flag = Arc::clone(&cancel);
     let (sender, mut receiver) = mpsc::channel(256);
     let task = tokio::spawn(async move {
@@ -327,6 +340,7 @@ pub async fn render_start(
     let mut seq = 0u64;
     let mut last_progress = Instant::now() - PROGRESS_THROTTLE;
     while let Some(kind) = receiver.recv().await {
+        log_event(&mut log, &kind);
         let mut emit = true;
         if let JobEventKind::Progress { permille, .. } = &kind {
             if *permille < 1000 && last_progress.elapsed() < PROGRESS_THROTTLE {
@@ -371,6 +385,13 @@ pub async fn render_start(
     remove_work_dir(&output_root, &work);
     match result {
         Ok(Ok(outcome)) => {
+            let size = std::fs::metadata(&outcome.iso_path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            log.line(format!(
+                "Listo en {elapsed_seconds:.0} s: {} ({size} bytes)",
+                outcome.iso_path
+            ));
             record_job(
                 job_id,
                 &job_name,
@@ -384,6 +405,7 @@ pub async fn render_start(
         }
         Ok(Err(RenderError::Cancelled)) => {
             let message = "Generación cancelada por el usuario.".to_string();
+            log.line(format!("{message} ({elapsed_seconds:.0} s)"));
             record_job(
                 job_id,
                 &job_name,
@@ -402,6 +424,7 @@ pub async fn render_start(
             Err(message)
         }
         Ok(Err(error)) => {
+            log.line(format!("✕ Error tras {elapsed_seconds:.0} s: {error}"));
             record_job(
                 job_id,
                 &job_name,
@@ -419,13 +442,14 @@ pub async fn render_start(
                     code: "E_RENDER".to_string(),
                     message: error.to_string(),
                     stage: None,
-                    log_path: None,
+                    log_path: log.display_path(),
                 },
             });
             Err(error.to_string())
         }
         Err(error) if error.is_cancelled() || cancel_flag.load(Ordering::SeqCst) => {
             let message = "Generación cancelada por el usuario.".to_string();
+            log.line(format!("{message} ({elapsed_seconds:.0} s)"));
             record_job(
                 job_id,
                 &job_name,
@@ -445,6 +469,7 @@ pub async fn render_start(
         }
         Err(error) => {
             let message = format!("la tarea de generación terminó inesperadamente: {error}");
+            log.line(format!("✕ {message}"));
             record_job(
                 job_id,
                 &job_name,
@@ -462,11 +487,57 @@ pub async fn render_start(
                     code: "E_RENDER_JOIN".to_string(),
                     message: message.clone(),
                     stage: None,
-                    log_path: None,
+                    log_path: log.display_path(),
                 },
             });
             Err(message)
         }
+    }
+}
+
+/// One line per event in the production log; progress is left out.
+/// One line per event in the production log. Progress is left out, and so
+/// are the artifact and completion events: they name the image in the work
+/// folder, which is removed; the final "Listo" line names the real one.
+fn log_event(log: &mut JobLog, kind: &JobEventKind) {
+    match kind {
+        JobEventKind::StageStarted { label, .. } => log.line(format!("▸ {label}")),
+        JobEventKind::Warning { code, message } => log.line(format!("⚠ [{code}] {message}")),
+        JobEventKind::Log { level, message } => match level {
+            LogLevel::Warn => log.line(format!("⚠ {message}")),
+            LogLevel::Error => log.line(format!("✕ {message}")),
+            LogLevel::Debug | LogLevel::Info => log.line(format!("  {message}")),
+        },
+        JobEventKind::Failed { code, message, .. } => log.line(format!("✕ [{code}] {message}")),
+        JobEventKind::Progress { .. }
+        | JobEventKind::Artifact { .. }
+        | JobEventKind::Completed { .. }
+        | JobEventKind::Cancelled { .. } => {}
+    }
+}
+
+fn mode_label(mode: AuthoringMode) -> &'static str {
+    match mode {
+        AuthoringMode::DvdVideo => "DVD-Video",
+        AuthoringMode::Avchd => "AVCHD/Blu-ray",
+    }
+}
+
+fn encoder_label(encoder: EncoderPreference) -> String {
+    match encoder {
+        EncoderPreference::Auto => "automático".to_string(),
+        EncoderPreference::CpuFast => "CPU rápido (x264 fast)".to_string(),
+        EncoderPreference::CpuOnly => "CPU medio (x264 medium)".to_string(),
+        EncoderPreference::CpuSlow => "CPU lento (x264 slow)".to_string(),
+        EncoderPreference::Prefer(hardware) => format!("GPU {hardware:?}"),
+    }
+}
+
+fn cpu_label(cpu: CpuUsage) -> &'static str {
+    match cpu {
+        CpuUsage::Background => "en segundo plano",
+        CpuUsage::Balanced => "equilibrado",
+        CpuUsage::Full => "máximo",
     }
 }
 

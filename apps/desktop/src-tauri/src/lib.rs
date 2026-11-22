@@ -2,6 +2,7 @@
 
 pub mod commands;
 pub mod context;
+pub mod joblog;
 
 use kinodisc_burn::{BurnProgress, BurnReport, OpticalDevice};
 use kinodisc_domain::{DiscConfig, Episode, MediaProbe, Menu, NavigationGraph, Project};
@@ -15,16 +16,17 @@ use commands::menu_apply_setup_menu;
 use commands::{
     autosave_discard, autosave_list, autosave_write, bundle_export, bundle_import, burn_cancel,
     burn_erase, burn_list_devices, burn_start, data_folder_size, data_iso_cancel, data_iso_create,
-    disc_import, disc_inspect, image_save_png, job_history_list, join_create, media_detect_crop,
-    media_detect_scenes, media_extract_frame, media_filter_preview, media_missing,
-    media_playback_support, media_prepare_preview, media_preview_url, media_probe_file,
-    media_sidecar_subtitles, menu_apply_chapter_menus, menu_apply_template, menu_navigation,
-    menu_save_background, menu_save_labels, menu_templates, open_folder, open_release_page,
-    plan_calculate, project_new, project_open, project_save, project_split, read_image_data_url,
-    recent_project_forget, recent_projects_list, render_cancel, render_export_folder,
-    render_quality_sample, render_start, slideshow_create, startup_project_path, system_fonts,
-    system_shutdown, toolchain_install, toolchain_install_options, toolchain_needs_install,
-    tools_doctor, update_check, verify_iso, PlaybackSupport,
+    disc_import, disc_inspect, image_save_png, job_history_list, join_create, logs_open,
+    media_detect_crop, media_detect_scenes, media_extract_frame, media_filter_preview,
+    media_missing, media_playback_support, media_prepare_preview, media_preview_url,
+    media_probe_file, media_sidecar_subtitles, menu_apply_chapter_menus, menu_apply_template,
+    menu_navigation, menu_save_background, menu_save_labels, menu_templates, open_folder,
+    open_release_page, plan_calculate, project_new, project_open, project_save, project_split,
+    read_image_data_url, recent_project_forget, recent_projects_list, render_cancel,
+    render_export_folder, render_quality_sample, render_start, slideshow_create,
+    startup_project_path, system_fonts, system_shutdown, toolchain_install,
+    toolchain_install_options, toolchain_needs_install, tools_doctor, update_check, verify_iso,
+    PlaybackSupport,
 };
 
 pub const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/api/bindings.ts");
@@ -75,6 +77,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             data_iso_create,
             data_iso_cancel,
             open_folder,
+            logs_open,
             system_shutdown,
             update_check,
             open_release_page,

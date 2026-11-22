@@ -115,6 +115,17 @@ pub fn open_folder(path: String) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// Opens the folder with the production, burn and erase logs (see
+/// `joblog`), creating it when nothing has been logged yet.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn logs_open() -> Result<(), String> {
+    let dir = crate::joblog::logs_dir()
+        .ok_or_else(|| "No se encontró la carpeta de datos de Kinodisc.".to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    open_folder(dir.display().to_string())
+}
+
 fn resolve_folder_target(requested: &std::path::Path) -> std::path::PathBuf {
     if requested.is_file() {
         requested

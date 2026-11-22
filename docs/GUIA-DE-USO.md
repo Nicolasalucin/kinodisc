@@ -232,7 +232,11 @@ La ventana explica el motivo en palabras simples (no hay disco, el disco está
 al revés, no está vacío, la velocidad es muy alta, el cable…) y qué probar.
 Si un disco regrabable no está vacío, ofrece **Borrar disco…**. **Copiar
 detalles** copia un informe técnico corto para pegarlo al pedir ayuda;
-Kinodisc nunca lo envía a ningún lado.
+Kinodisc nunca lo envía a ningún lado. **Abrir registros** abre la carpeta con
+un archivo de texto por cada producción, grabación y borrado
+(`%LOCALAPPDATA%\org.kinodisc.app\logs` en Windows): adjunta el de la
+grabación que falló a un reporte. Tu carpeta de usuario aparece como `~`; se
+guardan los 30 más recientes.
 
 ### Si la producción se corta a la mitad
 

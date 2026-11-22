@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.5 — 2026-11-22
+
+### Added
+
+- **A log of every production, burn and erase**, one text file each, in Kinodisc's data folder (`%LOCALAPPDATA%\org.kinodisc.app\logs` on Windows, `~/.local/share/org.kinodisc.app/logs` on Linux). A burn log says which image, drive, disc and speed were used, the structural check, the progress every 10 % of the burn and of the check, and how it ended; a production log lists its steps, warnings and result. Your home folder is written as `~`, so a log can be attached to a bug report as it is. The newest 30 are kept. Nothing is sent anywhere. **Open logs** in a burn, erase or production error opens the folder.
+- **Copy details** after a failed burn also gives the drive, the speed, whether the disc was being checked, and how far it got.
+
+### Fixed
+
+- **The check after burning works on Windows.** Windows reports a UDF disc one sector shorter than it is and stops reading there, so every burn with **Verify** ended in "la verificación IMAPI2 no cubrió el ISO" although the disc had been written. Kinodisc now reads the drive directly (no cache, reads allowed to the end of the disc, the old file system dismounted when nobody else uses the drive), waits for a drive that is still settling after the burn, and compares the whole image. If a disc burned with an earlier version that showed this error looks empty, eject it and put it back in (Windows may still show what the disc held before the burn), then try it in the player.
+- **When the check cannot read the whole disc it says how far it got**: bytes and sectors read, the error the system gave, the size the drive reports and the disc type, instead of a short sentence. The dialog explains that the burn itself finished. The same applies on Linux, macOS and FreeBSD.
+
 ## 1.2.4 — 2026-11-22
 
 ### Added

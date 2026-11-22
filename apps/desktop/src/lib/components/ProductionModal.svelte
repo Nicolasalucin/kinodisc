@@ -177,6 +177,30 @@
     Math.min(100, Math.max(0, projectStore.burnProgress?.percent ?? 0)),
   );
   const needsBurn = $derived(mode === "isoBurn" || mode === "existing");
+  /** What "Copy details" adds to a burn error: drive, settings, how far it got. */
+  const burnExtra = $derived.by(() => {
+    const drive = devices.find((item) => item.id === effectiveDevice);
+    const progress = projectStore.burnProgress;
+    return [
+      drive ? `drive: ${[drive.vendor, drive.model].filter(Boolean).join(" ") || "?"} (${drive.bus})` : "",
+      `speed: ${effectiveSpeed}x · verify: ${verify ? "on" : "off"}`,
+      progress
+        ? `progress: ${(progress.percent ?? 0).toFixed(1)} % (${progress.writtenBytes}/${progress.totalBytes} bytes)`
+        : "",
+    ];
+  });
+
+  /** The folder with one log per production, burn and erase. */
+  let logsError = $state<string | null>(null);
+  async function openLogs() {
+    try {
+      await unwrap(commands.logsOpen());
+      logsError = null;
+    } catch (cause) {
+      // Shown under the production error, which stays visible.
+      logsError = messageOf(cause);
+    }
+  }
   // What stops this mode from working at all, said before the user starts.
   const missingTools = $derived(projectStore.toolsReport?.missingRequired ?? []);
   const emptyMenu = $derived(
@@ -714,6 +738,7 @@
             action={t("Grabar")}
             device={effectiveDevice}
             image={mode === "existing" ? existingIso : projectStore.lastIso}
+            extra={burnExtra}
             onerase={() => ui.open("eraseDisc")}
           />
         </div>
@@ -724,6 +749,10 @@
             <p class="mt-1 text-[11px] text-rose-100/70">
               {t("Si vuelves a generar el disco, los episodios que ya estaban codificados se reutilizan: no se empieza de cero.")}
             </p>
+            <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost mt-2" onclick={openLogs}>{t("Abrir registros")}</button>
+            {#if logsError}
+              <p class="mt-1 break-words text-[11px] text-rose-100/70">{logsError}</p>
+            {/if}
           {/if}
         </div>
       {/if}

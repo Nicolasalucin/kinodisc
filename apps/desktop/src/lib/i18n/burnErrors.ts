@@ -82,6 +82,10 @@ const PHRASES: Array<[RegExp, Entry]> = [
     "Espera a que termine lo que está haciendo y vuelve a intentarlo.",
   ]],
   [/verificación fallida/i, ["El disco grabado no coincide con la imagen.", "Prueba con otro disco o con una velocidad menor."]],
+  [/la verificación no pudo leer todo el disco/i, [
+    "La grabación terminó, pero no se pudo leer el disco entero para comprobarlo.",
+    "Lo más probable es que el disco esté bien: pruébalo en el reproductor. Si falla, copia los detalles o abre los registros y repórtalo.",
+  ]],
   [/Este disco no es regrabable|no puede borrar el disco/i, IMAPI.C0AA0909],
   [/permiso denegado/i, [
     "El sistema no dejó usar la grabadora.",
@@ -119,6 +123,8 @@ export function burnDiagnostics(details: {
   device: string;
   image?: string | null;
   message: string;
+  /** More facts the dialog knows (drive, speed, progress), one per line. */
+  extra?: string[];
 }): string {
   const lines = [
     `Kinodisc ${details.appVersion}`,
@@ -126,6 +132,14 @@ export function burnDiagnostics(details: {
     `${details.action} · ${details.device || "?"}`,
   ];
   if (details.image) lines.push(details.image.replace(/^.*[\\/]/, ""));
+  for (const line of details.extra ?? []) if (line) lines.push(line);
   lines.push(details.message);
-  return lines.join("\n");
+  return withoutHome(lines.join("\n"));
+}
+
+/** The user's folder in a path (Windows, macOS, Linux) becomes `~`, as in the logs. */
+export function withoutHome(text: string): string {
+  return text
+    .replace(/[A-Za-z]:[\\/]+Users[\\/]+[^\\/:*?"<>|\r\n]+/gi, "~")
+    .replace(/\/(?:home|Users)\/[^/\r\n]+/g, "~");
 }

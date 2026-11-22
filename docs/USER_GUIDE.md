@@ -228,7 +228,10 @@ The dialog says why in plain words (no disc, the disc is upside down, it is
 not empty, the speed is too high, the cable…) and what to try. When a
 rewritable disc is not empty it offers **Erase disc…**. **Copy details**
 copies a short technical report you can paste when asking for help; Kinodisc
-never sends it anywhere.
+never sends it anywhere. **Open logs** opens the folder with one text file per
+production, burn and erase (`%LOCALAPPDATA%\org.kinodisc.app\logs` on
+Windows): attach the one of the failed burn to a bug report. Your home folder
+is written as `~` in them; the newest 30 are kept.
 
 ### If production stops halfway
 

@@ -451,6 +451,29 @@ Smart Render Cache v2:
   compares it with `DiscCapacity::medium_bytes()` (recordable sectors ×
   2048) and emits `W_IMAGE_LARGER_THAN_DISC`.
 
+### 21. Kinodisc 1.2.5 additions
+
+- **Windows read-back** (`kinodisc-burn::windows::verify_sync`): open
+  `\\.\X:` with `FILE_FLAG_NO_BUFFERING` (sector-aligned 1 MiB buffer),
+  `FSCTL_LOCK_VOLUME` + `FSCTL_DISMOUNT_VOLUME` only when the lock succeeds,
+  then always `FSCTL_ALLOW_EXTENDED_DASD_IO`. Without it Windows stops reads
+  where the mounted UDF volume ends, one sector before a Kinodisc image ends
+  (measured on a mounted ISO: 60 786 688 of 60 788 736 bytes). Settling
+  errors (21, 1110, 1111, 1112) are retried for up to 30 s. Manual test:
+  `crates/kinodisc-burn/tests/windows_readback.rs` (ignored; mount an ISO).
+- A short read-back is `BurnError::VerifyIncomplete` built by
+  `kinodisc_burn::verify_incomplete(read, iso, detail)` on every platform,
+  with bytes, sectors and what the system said. The frontend matches
+  "la verificación no pudo leer todo el disco".
+- **Job logs** (`src-tauri/src/joblog.rs`): one file per production
+  (`produccion-*`), burn (`grabacion-*`) and erase (`borrado-*`) in
+  `legacy::app_data_dir()/logs`; the home folder in any spelling (profile,
+  forward slashes, the 8.3 form in `TEMP`) is written as `~`; the newest 30
+  of those names are kept and nothing else in the folder is touched. A log
+  that cannot be written never fails the job. Render `Failed` events carry
+  `log_path`. `logs_open` opens the folder (through `open_folder`). Logs are
+  local only, like "Copy details" (see section 19).
+
 ### 13. Localization
 
 - Spanish is the source language; English must stay complete. Run

@@ -227,7 +227,7 @@ mod platform {
     use tokio_util::sync::CancellationToken;
     use windows::core::{implement, Ref, Result as WinResult, BSTR, HRESULT};
     use windows::Win32::Foundation::{
-        E_ABORT, E_FAIL, E_NOTIMPL, E_POINTER, VARIANT_FALSE, VARIANT_TRUE,
+        E_ABORT, E_FAIL, E_NOTIMPL, E_POINTER, HANDLE, VARIANT_FALSE, VARIANT_TRUE,
     };
     use windows::Win32::Storage::Imapi::{
         IDiscFormat2Data, IDiscFormat2Erase, IDiscMaster2, IDiscRecorder2, MsftDiscFormat2Data,
@@ -243,6 +243,7 @@ mod platform {
         SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetLBound, SafeArrayGetUBound,
         SafeArrayUnaccessData,
     };
+    use windows::Win32::System::IO::DeviceIoControl;
 
     #[derive(Debug, Default, Clone, Copy)]
     pub struct WindowsBurner;
@@ -648,23 +649,62 @@ mod platform {
             std::thread::spawn(move || hash_file_sync(&iso))
         };
         let raw = raw_volume_path(device.as_str())?;
-        let mut file = std::fs::File::open(&raw).map_err(map_io)?;
+        let mut file = open_raw_volume(&raw, cancel)?;
+        let mut notes = Vec::new();
+        // A rewritable disc burned over an older one can still be mounted
+        // with the old file system, and Windows stops reads of the volume
+        // where that file system ends: a big image read back over a small
+        // one stops early. When nobody else has the drive open,
+        // dismount it (Windows mounts the new one on the next access); in
+        // any case ask for reads past the file system's end.
+        if ioctl(&file, FSCTL_LOCK_VOLUME, None).is_ok() {
+            match ioctl(&file, FSCTL_DISMOUNT_VOLUME, None) {
+                Ok(_) => notes.push("volumen desmontado".to_string()),
+                Err(error) => notes.push(format!("sin desmontar ({})", win_code(&error))),
+            }
+        } else {
+            notes.push("unidad abierta por otro programa (sin desmontar)".to_string());
+        }
+        if let Err(error) = ioctl(&file, FSCTL_ALLOW_EXTENDED_DASD_IO, None) {
+            notes.push(format!("sin lectura extendida ({})", win_code(&error)));
+        }
         use std::io::{Read, Seek, SeekFrom};
-        file.seek(SeekFrom::Start(0)).map_err(map_io)?;
         let mut hasher = Sha256::new();
-        let mut buffer = vec![0u8; 1024 * 1024];
+        // Unbuffered reads need a sector-aligned buffer.
+        let mut storage = vec![0u8; VERIFY_BUFFER + VERIFY_ALIGN];
+        let start = storage.as_ptr().align_offset(VERIFY_ALIGN);
+        let buffer = &mut storage[start..start + VERIFY_BUFFER];
         let mut remaining_iso = iso_size;
         let mut remaining_read = sectors_checked * DVD_SECTOR_BYTES;
         let mut read_total = 0u64;
+        let mut retries = 0u32;
+        let mut stop = String::new();
         while remaining_read > 0 {
             if cancel.is_cancelled() {
                 return Err(BurnError::Cancelled);
             }
-            let chunk = remaining_read.min(buffer.len() as u64) as usize;
-            let read = file.read(&mut buffer[..chunk]).map_err(map_io)?;
-            if read == 0 {
-                break;
-            }
+            let chunk = remaining_read.min(VERIFY_BUFFER as u64) as usize;
+            let read = match file.read(&mut buffer[..chunk]) {
+                Ok(0) => {
+                    stop = format!("Windows dio fin de datos en el byte {read_total}");
+                    break;
+                }
+                Ok(read) => read,
+                Err(error) => {
+                    // A drive that just finished burning can answer "not
+                    // ready" for a few seconds; any other error is retried
+                    // a couple of times before giving up.
+                    let limit = if is_settling(&error) { 30 } else { 3 };
+                    if retries < limit && file.seek(SeekFrom::Start(read_total)).is_ok() {
+                        retries += 1;
+                        std::thread::sleep(Duration::from_secs(1));
+                        continue;
+                    }
+                    stop = format!("error de lectura en el byte {read_total}: {error}");
+                    break;
+                }
+            };
+            retries = 0;
             if remaining_iso > 0 {
                 let take = remaining_iso.min(read as u64) as usize;
                 hasher.update(&buffer[..take]);
@@ -681,8 +721,27 @@ mod platform {
             });
         }
         if remaining_read > 0 || remaining_iso > 0 {
-            return Err(BurnError::InvalidRequest(
-                "la verificación IMAPI2 no cubrió el ISO".to_string(),
+            let length = match volume_length(&file) {
+                Ok(bytes) => format!("la unidad informa {bytes} bytes"),
+                Err(error) => format!("la unidad no informa su tamaño ({})", win_code(&error)),
+            };
+            drop(file);
+            let media = match com_probe_media(device.as_str()) {
+                Ok(media) => format!(
+                    "disco {:?} {:?}, {} bytes, {} libres",
+                    media.kind, media.status, media.capacity_bytes, media.free_bytes
+                ),
+                Err(error) => format!("disco sin datos ({error})"),
+            };
+            let detail = [stop, length, media, notes.join(", ")]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(crate::verify_incomplete(
+                read_total,
+                iso_size,
+                &format!("{raw}: {detail}"),
             ));
         }
         let iso_hash = iso_hasher.join().map_err(|_| {
@@ -695,6 +754,90 @@ mod platform {
             sha256_iso: iso_hash,
             sha256_disc: disc_hash,
         })
+    }
+
+    // winioctl.h / winbase.h
+    const FSCTL_LOCK_VOLUME: u32 = 0x0009_0018;
+    const FSCTL_DISMOUNT_VOLUME: u32 = 0x0009_0020;
+    const FSCTL_ALLOW_EXTENDED_DASD_IO: u32 = 0x0009_0083;
+    const IOCTL_DISK_GET_LENGTH_INFO: u32 = 0x0007_405C;
+    const FILE_FLAG_NO_BUFFERING: u32 = 0x2000_0000;
+    const FILE_SHARE_READ_WRITE: u32 = 0x0000_0001 | 0x0000_0002;
+    const VERIFY_BUFFER: usize = 1024 * 1024;
+    const VERIFY_ALIGN: usize = 4096;
+
+    /// Errors a drive gives while it settles after a burn: not ready, media
+    /// changed, bus reset, no media (while it re-reads the disc).
+    fn is_settling(error: &std::io::Error) -> bool {
+        matches!(error.raw_os_error(), Some(21 | 1110 | 1111 | 1112))
+    }
+
+    fn win_code(error: &windows::core::Error) -> String {
+        format!("0x{:08X}", error.code().0 as u32)
+    }
+
+    /// Opens `\\.\X:` for reading straight from the disc (no cache, which
+    /// could hold the disc that was there before), waiting up to 30 s for
+    /// a drive that is still settling after the burn.
+    fn open_raw_volume(path: &str, cancel: &CancellationToken) -> Result<std::fs::File, BurnError> {
+        use std::os::windows::fs::OpenOptionsExt;
+        let mut waited = 0;
+        loop {
+            let unbuffered = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ_WRITE)
+                .custom_flags(FILE_FLAG_NO_BUFFERING)
+                .open(path);
+            let error = match unbuffered {
+                Ok(file) => return Ok(file),
+                Err(error) => error,
+            };
+            if is_settling(&error) && waited < 30 && !cancel.is_cancelled() {
+                waited += 1;
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
+            }
+            // Some drivers refuse unbuffered handles: read through the cache.
+            return std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ_WRITE)
+                .open(path)
+                .map_err(|_| map_io(error));
+        }
+    }
+
+    fn ioctl(
+        file: &std::fs::File,
+        code: u32,
+        output: Option<&mut [u8]>,
+    ) -> Result<u32, windows::core::Error> {
+        use std::os::windows::io::AsRawHandle;
+        let handle = HANDLE(file.as_raw_handle());
+        let (pointer, size) = match output {
+            Some(buffer) => (Some(buffer.as_mut_ptr().cast()), buffer.len() as u32),
+            None => (None, 0),
+        };
+        let mut returned = 0u32;
+        unsafe {
+            DeviceIoControl(
+                handle,
+                code,
+                None,
+                0,
+                pointer,
+                size,
+                Some(&mut returned),
+                None,
+            )
+        }?;
+        Ok(returned)
+    }
+
+    /// What the drive says the readable part of the disc measures.
+    fn volume_length(file: &std::fs::File) -> Result<i64, windows::core::Error> {
+        let mut output = [0u8; 8];
+        ioctl(file, IOCTL_DISK_GET_LENGTH_INFO, Some(&mut output))?;
+        Ok(i64::from_le_bytes(output))
     }
 
     fn hash_file_sync(path: &std::path::Path) -> Result<String, BurnError> {

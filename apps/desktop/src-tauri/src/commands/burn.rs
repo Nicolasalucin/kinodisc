@@ -1,3 +1,4 @@
+use crate::joblog::JobLog;
 use kinodisc_burn::{
     platform_burner, BurnProgress, BurnReport, BurnRequest, CancellationToken, DeviceId,
     EraseReport, OpticalDevice,
@@ -81,6 +82,20 @@ pub async fn burn_list_devices() -> Result<Vec<OpticalDevice>, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn burn_erase(device: String, full: bool) -> Result<EraseReport, String> {
+    let mut log = JobLog::create("borrado");
+    log.line(format!(
+        "Borrar el disco de {device} ({})",
+        if full { "completo" } else { "rápido" }
+    ));
+    let result = run_erase(&mut log, device, full).await;
+    match &result {
+        Ok(report) => log.line(format!("Listo: {report:?}")),
+        Err(error) => log.line(format!("✕ Error: {error}")),
+    }
+    result
+}
+
+async fn run_erase(log: &mut JobLog, device: String, full: bool) -> Result<EraseReport, String> {
     let device = DeviceId::new(device);
     let job_id = JobId::new();
     {
@@ -101,6 +116,7 @@ pub async fn burn_erase(device: String, full: bool) -> Result<EraseReport, Strin
         .probe_media(&device)
         .await
         .map_err(|error| error.to_string())?;
+    log.line(format!("Disco: {media:?}"));
     if !media.rewritable {
         return Err(not_rewritable_message().to_string());
     }
@@ -118,6 +134,39 @@ fn not_rewritable_message() -> &'static str {
 #[tauri::command]
 #[specta::specta]
 pub async fn burn_start(
+    iso_path: String,
+    device: String,
+    speed: u16,
+    verify: bool,
+    eject: bool,
+    channel: Channel<BurnProgress>,
+) -> Result<BurnReport, String> {
+    let mut log = JobLog::create("grabacion");
+    log.line(format!(
+        "Grabar {iso_path} en {device} a {speed}x; verificar: {}; expulsar: {}",
+        yes_no(verify),
+        yes_no(eject)
+    ));
+    let started = std::time::Instant::now();
+    let result = run_burn(&mut log, iso_path, device, speed, verify, eject, channel).await;
+    let seconds = started.elapsed().as_secs();
+    match &result {
+        Ok(report) => log.line(format!("Listo en {seconds} s: {report:?}")),
+        Err(error) => log.line(format!("✕ Error tras {seconds} s: {error}")),
+    }
+    result
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "sí"
+    } else {
+        "no"
+    }
+}
+
+async fn run_burn(
+    log: &mut JobLog,
     iso_path: String,
     device: String,
     speed: u16,
@@ -148,6 +197,14 @@ pub async fn burn_start(
                 format!("La verificación estructural terminó inesperadamente: {error}")
             })?
             .map_err(|error| format!("No se pudo verificar la ISO antes de grabar: {error}"))?;
+    log.line(format!(
+        "ISO: {} bytes; verificación estructural: {} comprobaciones, {} bloquean",
+        std::fs::metadata(&iso)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0),
+        verification.checks.len(),
+        verification.burn_blockers().len()
+    ));
     let failures: Vec<String> = verification
         .burn_blockers()
         .iter()
@@ -181,6 +238,25 @@ pub async fn burn_start(
     };
     let (sender, mut receiver) = mpsc::channel(64);
     let burner = platform_burner();
+    // What the drive and the disc were, for the log (best effort).
+    let device_id = DeviceId::new(device.clone());
+    match burner.list_devices().await {
+        Ok(devices) => match devices.iter().find(|item| item.id == device_id) {
+            Some(item) => log.line(format!(
+                "Grabadora: {} {} ({})",
+                item.vendor, item.model, item.bus
+            )),
+            None => log.line(format!(
+                "Grabadora {device} no listada entre {} unidades",
+                devices.len()
+            )),
+        },
+        Err(error) => log.line(format!("No se pudieron listar las grabadoras: {error}")),
+    }
+    match burner.probe_media(&device_id).await {
+        Ok(media) => log.line(format!("Disco: {media:?}")),
+        Err(error) => log.line(format!("No se pudo leer el disco: {error}")),
+    }
     let label = iso
         .file_stem()
         .and_then(|value| value.to_str())
@@ -203,7 +279,11 @@ pub async fn burn_start(
     });
 
     let mut last_sent: Option<std::time::Instant> = None;
+    let mut milestones = BurnMilestones::default();
     while let Some(progress) = receiver.recv().await {
+        if let Some(line) = milestones.note(&progress) {
+            log.line(line);
+        }
         // Coalesce per-MiB verify / per-IStream::Read updates like render_start.
         if progress.percent < 100.0
             && last_sent.is_some_and(|sent| sent.elapsed() < PROGRESS_THROTTLE)
@@ -226,8 +306,74 @@ pub async fn burn_start(
     }
 }
 
+/// Burn and verify progress every 10 %, for the log. The check after the
+/// burn starts its own 0–100 %: a drop in the percentage marks it.
+#[derive(Default)]
+struct BurnMilestones {
+    verifying: bool,
+    peak: f32,
+    step: Option<u32>,
+}
+
+impl BurnMilestones {
+    fn note(&mut self, progress: &BurnProgress) -> Option<String> {
+        let mut prefix = String::new();
+        if !self.verifying && progress.percent + 5.0 < self.peak {
+            self.verifying = true;
+            self.step = None;
+            prefix = "Grabación terminada; comprobando el disco.\n".to_string();
+        }
+        self.peak = self.peak.max(progress.percent);
+        let step = (progress.percent.clamp(0.0, 100.0) / 10.0).floor() as u32;
+        if self.step.is_some_and(|last| step <= last) {
+            return None;
+        }
+        self.step = Some(step);
+        let phase = if self.verifying {
+            "Comprobando"
+        } else {
+            "Grabando"
+        };
+        let speed = progress
+            .speed_x
+            .map(|speed| format!(" a {speed:.1}x"))
+            .unwrap_or_default();
+        Some(format!(
+            "{prefix}{phase}: {:.0} % ({} de {} bytes{speed})",
+            progress.percent, progress.written_bytes, progress.total_bytes
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn burn_milestones_tell_the_burn_from_the_check() {
+        let mut milestones = super::BurnMilestones::default();
+        let at = |percent: f32| kinodisc_burn::BurnProgress {
+            written_bytes: (percent * 10.0) as u64,
+            total_bytes: 1000,
+            percent,
+            speed_x: None,
+            eta_secs: None,
+        };
+        let lines: Vec<String> = [0.0, 3.0, 12.0, 15.0, 100.0, 0.5, 9.0, 55.0, 100.0]
+            .into_iter()
+            .filter_map(|percent| milestones.note(&at(percent)))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "Grabando: 0 % (0 de 1000 bytes)",
+                "Grabando: 12 % (120 de 1000 bytes)",
+                "Grabando: 100 % (1000 de 1000 bytes)",
+                "Grabación terminada; comprobando el disco.\nComprobando: 0 % (5 de 1000 bytes)",
+                "Comprobando: 55 % (550 de 1000 bytes)",
+                "Comprobando: 100 % (1000 de 1000 bytes)",
+            ]
+        );
+    }
+
     #[test]
     fn a_data_disc_image_is_not_refused_but_a_broken_one_is() {
         let image = std::env::temp_dir().join(format!("kd-burn-data-{}", std::process::id()));

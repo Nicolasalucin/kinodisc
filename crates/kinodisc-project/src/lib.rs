@@ -44,6 +44,31 @@ pub fn load_and_validate(path: impl AsRef<Path>) -> Result<Project, ProjectError
     Ok(project)
 }
 
+/// Errors the editor can fix by itself: a project that only has these
+/// still opens in the app (the render keeps refusing it until it is fixed).
+pub const EDITABLE_ERRORS: &[&str] = &["E_AC3_KBPS"];
+
+/// Loads a project for the editor: like [`load_and_validate`], but errors in
+/// [`EDITABLE_ERRORS`] do not block opening it.
+pub fn load_for_editing(path: impl AsRef<Path>) -> Result<Project, ProjectError> {
+    let project = load_project(path)?;
+    let errors: Vec<Diagnostic> = project
+        .validate()
+        .into_iter()
+        .filter(|diagnostic| {
+            diagnostic.severity == Severity::Error
+                && !EDITABLE_ERRORS.contains(&diagnostic.code.as_str())
+        })
+        .collect();
+    if !errors.is_empty() {
+        return Err(ProjectError::Invalid {
+            count: errors.len(),
+            errors,
+        });
+    }
+    Ok(project)
+}
+
 /// Serializes a project with stable, human-readable formatting.
 pub fn project_to_json(project: &Project) -> Result<String, ProjectError> {
     Ok(serde_json::to_string_pretty(project)?)
@@ -109,6 +134,23 @@ mod tests {
 
     fn fixture_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/projects/minimal.json")
+    }
+
+    #[test]
+    fn a_bad_audio_bitrate_opens_in_the_editor_but_not_for_rendering() {
+        let text = std::fs::read_to_string(fixture_path()).expect("fixture");
+        let bad = text.replacen("\"ac3Kbps\": 192", "\"ac3Kbps\": 100", 1);
+        assert_ne!(bad, text, "the fixture has an AC-3 bitrate to change");
+        let dir = std::env::temp_dir().join(format!("kinodisc-ac3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("bad-ac3.json");
+        std::fs::write(&path, bad).expect("write");
+        assert!(load_for_editing(&path).is_ok());
+        assert!(matches!(
+            load_and_validate(&path),
+            Err(ProjectError::Invalid { .. })
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -965,6 +965,17 @@ export const fr: Dictionary = {
   "Carpeta donde copiar los títulos": "Dossier où copier les titres",
   "Cifrado: se puede ver, pero no importar.": "Chiffré : consultable, mais non importable.",
   "Disco de datos": "Disque de données",
+  "Codificación AVCHD por CPU: x264, preset {preset}.": "Encodage AVCHD par le CPU : x264, préréglage {preset}.",
+  "Esta tasa no se admite: elige otra de la lista (en 5.1, 192 kbps o más).": "Ce débit n'est pas pris en charge : choisissez-en un autre dans la liste (192 kbps ou plus en 5.1).",
+  "recomendado": "recommandé",
+  "Automático ({encoder}; si falla, CPU medio)": "Automatique ({encoder} ; en cas d'échec, CPU moyen)",
+  "Automático (CPU medio)": "Automatique (CPU moyen)",
+  "CPU rápido (x264 fast): ~0,7× el tiempo, algo menos de calidad": "CPU rapide (x264 fast) : ~0,7× le temps, qualité un peu moindre",
+  "CPU medio (x264 medium): equilibrado": "CPU moyen (x264 medium) : équilibré",
+  "CPU lento (x264 slow): ~2× el tiempo, la mejor calidad": "CPU lent (x264 slow) : ~2× le temps, meilleure qualité",
+  "{encoder} (GPU): lo más rápido, menos calidad a tasas bajas": "{encoder} (GPU) : le plus rapide, moins de qualité à bas débit",
+  "El tamaño del disco es el mismo con cualquier opción: el plan ya reparte todo el espacio. Cambian la calidad y el tiempo.": "La taille du disque est la même avec chaque option : le plan répartit déjà tout l'espace. Seuls la qualité et le temps changent.",
+  "Este formato (entrelazado o PsF) se codifica siempre por CPU.": "Ce format (entrelacé ou PsF) est toujours encodé par le CPU.",
   "Elige una velocidad menor.": "Choisissez une vitesse plus basse.",
   "Ya existe una imagen con esa etiqueta en la carpeta de salida. Cambia la etiqueta o elige otra carpeta.": "Le dossier de sortie contient déjà une image avec ce nom. Changez le nom ou choisissez un autre dossier.",
   "Detalles técnicos": "Détails techniques",
@@ -1516,6 +1527,7 @@ export const fr: Dictionary = {
 };
 
 export const DIAGNOSTIC_FR: Record<string, string> = {
+  E_AC3_KBPS: "Ce débit AC-3 n'est pas pris en charge. Utilisez 64, 96, 128, 192 kbps ou un autre débit standard ; le 5.1 demande 192 kbps ou plus.",
   E_ACTION_CHAPTER_MISSING: "Un bouton saute vers un chapitre qui n'existe plus.",
   E_ACTION_EPISODE_MISSING: "Un bouton lit un épisode qui n'existe plus.",
   E_ACTION_MENU_MISSING: "Un bouton ouvre un menu qui n'existe plus.",

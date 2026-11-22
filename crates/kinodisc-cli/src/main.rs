@@ -714,8 +714,11 @@ fn print_help() {
         "  kinodisc-cli chapters <project.json> --scenes [--sensitivity 0..1] [-o <salida.json>]   (capítulos en los cambios de escena)"
     );
     println!("  kinodisc-cli split <project.json> [--per-episode]   (un proyecto por disco)");
-    println!("  kinodisc-cli render <project.json> [-o <dir>] [--mode dvd|avchd] [--folder] [--no-probe]");
+    println!("  kinodisc-cli render <project.json> [-o <dir>] [--mode dvd|avchd] [--encoder <tipo>] [--folder] [--no-probe]");
     println!("      --folder  también escribe <dir>/disc con VIDEO_TS o BDMV (idéntico al ISO)");
+    println!("      --encoder auto|cpu-fast|cpu-medium|cpu-slow|nvenc|qsv|amf|vaapi|videotoolbox");
+    println!("                H.264 para AVCHD/Blu-ray (auto: hardware si hay, si no cpu-medium).");
+    println!("                El tamaño del disco no cambia: cambian la calidad y el tiempo.");
     println!("  kinodisc-cli verify <iso> [--deep] [--json] [--strict]");
     println!("  kinodisc-cli inspect <disco.iso|carpeta> [--json] [--import <carpeta>]   (qué hay en un disco)");
     println!("  kinodisc-cli devices [--json]");

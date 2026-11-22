@@ -8,6 +8,7 @@
  * when they are added to Rust (`npm run i18n:check` reports missing codes).
  */
 export const DIAGNOSTIC_EN: Record<string, string> = {
+  E_AC3_KBPS: "This AC-3 bitrate is not supported. Use 64, 96, 128, 192 kbps or another standard rate; 5.1 needs 192 kbps or more.",
   E_ACTION_CHAPTER_MISSING: "A button jumps to a chapter that no longer exists.",
   E_ACTION_EPISODE_MISSING: "A button plays an episode that no longer exists.",
   E_ACTION_MENU_MISSING: "A button opens a menu that no longer exists.",

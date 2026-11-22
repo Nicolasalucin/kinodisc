@@ -178,6 +178,7 @@ export function localizeError(message: string): string {
 const LOG_TEMPLATES: Array<[string, string]> = [
   ["Menús compuestos sin el editor: {count}.", "Menús compuestos sin el editor: {count}."],
   ["Codificación AVCHD con aceleración hardware: {}", "Codificación AVCHD con aceleración hardware: {encoder}"],
+  ["Codificación AVCHD por CPU: x264, preset {}.", "Codificación AVCHD por CPU: x264, preset {preset}."],
   ["«{}»: el vídeo se copia sin recodificar.", "«{title}»: el vídeo se copia sin recodificar."],
   ["«{}»: ya estaba codificado en un render anterior; se reutiliza.", "«{title}»: ya estaba codificado en un render anterior; se reutiliza."],
   ["Episodio AVCHD {}/{}: reutilizando caché de artefactos {}", "Episodio AVCHD {index}/{total}: reutilizando caché de artefactos {path}"],

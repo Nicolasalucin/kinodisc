@@ -271,7 +271,9 @@ pub fn project_open(path: String) -> Result<Project, String> {
     if !std::path::Path::new(&path).is_file() {
         return Err("E_PROJECT_NOT_FOUND: No se encuentra el archivo del proyecto; puede que se haya movido, borrado o que esté en un disco desconectado.".to_string());
     }
-    let project = kinodisc_project::load_and_validate(&path).map_err(|error| error.to_string())?;
+    // A wrong audio bitrate can be fixed in the editor, so it does not
+    // block opening (QA 1.2.3); producing the disc still refuses it.
+    let project = kinodisc_project::load_for_editing(&path).map_err(|error| error.to_string())?;
     context::set_from_file(std::path::Path::new(&path));
     if let Err(error) = super::store::record_project(&path, &project) {
         eprintln!("No se pudo actualizar la lista de proyectos recientes: {error}");

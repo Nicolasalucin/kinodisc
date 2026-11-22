@@ -964,6 +964,17 @@ export const ja: Dictionary = {
   "Carpeta donde copiar los títulos": "タイトルのコピー先フォルダー",
   "Cifrado: se puede ver, pero no importar.": "暗号化されています。表示はできますが、取り込めません。",
   "Disco de datos": "データディスク",
+  "Codificación AVCHD por CPU: x264, preset {preset}.": "CPU による AVCHD エンコード：x264、プリセット {preset}。",
+  "Esta tasa no se admite: elige otra de la lista (en 5.1, 192 kbps o más).": "このビットレートには対応していません。一覧から別の値を選んでください（5.1 は 192 kbps 以上）。",
+  "recomendado": "おすすめ",
+  "Automático ({encoder}; si falla, CPU medio)": "自動（{encoder}。失敗時は CPU 標準）",
+  "Automático (CPU medio)": "自動（CPU 標準）",
+  "CPU rápido (x264 fast): ~0,7× el tiempo, algo menos de calidad": "CPU 高速（x264 fast）：時間は約 0.7 倍、画質はやや低め",
+  "CPU medio (x264 medium): equilibrado": "CPU 標準（x264 medium）：バランス型",
+  "CPU lento (x264 slow): ~2× el tiempo, la mejor calidad": "CPU 低速（x264 slow）：時間は約 2 倍、最高画質",
+  "{encoder} (GPU): lo más rápido, menos calidad a tasas bajas": "{encoder}（GPU）：最速。低ビットレートでは画質が下がります",
+  "El tamaño del disco es el mismo con cualquier opción: el plan ya reparte todo el espacio. Cambian la calidad y el tiempo.": "どのオプションでもディスクのサイズは同じです。プランがすでに全容量を割り当てています。変わるのは画質と時間だけです。",
+  "Este formato (entrelazado o PsF) se codifica siempre por CPU.": "この形式（インターレースまたは PsF）は常に CPU でエンコードされます。",
   "Elige una velocidad menor.": "より低い速度を選んでください。",
   "Ya existe una imagen con esa etiqueta en la carpeta de salida. Cambia la etiqueta o elige otra carpeta.": "出力フォルダーに同じラベルのイメージがすでにあります。ラベルを変えるか、別のフォルダーを選んでください。",
   "Detalles técnicos": "技術的な詳細",
@@ -1515,6 +1526,7 @@ export const ja: Dictionary = {
 };
 
 export const DIAGNOSTIC_JA: Record<string, string> = {
+  E_AC3_KBPS: "この AC-3 ビットレートには対応していません。64、96、128、192 kbps などの標準値を使ってください。5.1 は 192 kbps 以上が必要です。",
   E_ACTION_CHAPTER_MISSING: "ボタンが存在しないチャプターを指しています。",
   E_ACTION_EPISODE_MISSING: "ボタンが存在しないエピソードを再生します。",
   E_ACTION_MENU_MISSING: "ボタンが存在しないメニューを開きます。",

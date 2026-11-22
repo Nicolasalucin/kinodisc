@@ -144,10 +144,28 @@ pub struct EncoderCapabilities {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub enum EncoderPreference {
+    /// The first working hardware encoder, otherwise x264 `medium`.
     #[default]
     Auto,
+    /// x264 `fast`: quicker, a little less quality at the same size.
+    CpuFast,
+    /// x264 `medium` (the historical "CPU only" choice).
     CpuOnly,
+    /// x264 `slow`: about twice the time of `medium`, best quality per byte.
+    CpuSlow,
     Prefer(HardwareEncoder),
+}
+
+impl EncoderPreference {
+    /// The x264 preset used when the CPU encodes (always the case for
+    /// interlaced or PsF video, and when no hardware encoder works).
+    pub const fn x264_preset(self) -> &'static str {
+        match self {
+            Self::CpuFast => "fast",
+            Self::CpuSlow => "slow",
+            Self::Auto | Self::CpuOnly | Self::Prefer(_) => "medium",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -692,7 +710,9 @@ pub fn resolve_hardware_encoder(
     capabilities: &EncoderCapabilities,
 ) -> Option<HardwareEncoder> {
     match preference {
-        EncoderPreference::CpuOnly => None,
+        EncoderPreference::CpuFast | EncoderPreference::CpuOnly | EncoderPreference::CpuSlow => {
+            None
+        }
         EncoderPreference::Auto => capabilities.h264.first().copied(),
         EncoderPreference::Prefer(encoder) => {
             capabilities.h264.contains(&encoder).then_some(encoder)
@@ -1072,10 +1092,17 @@ mod tests {
             hevc: Vec::new(),
             probed_at: None,
         };
-        assert_eq!(
-            resolve_hardware_encoder(EncoderPreference::CpuOnly, &capabilities),
-            None
-        );
+        for cpu in [
+            EncoderPreference::CpuFast,
+            EncoderPreference::CpuOnly,
+            EncoderPreference::CpuSlow,
+        ] {
+            assert_eq!(resolve_hardware_encoder(cpu, &capabilities), None);
+        }
+        assert_eq!(EncoderPreference::CpuFast.x264_preset(), "fast");
+        assert_eq!(EncoderPreference::CpuOnly.x264_preset(), "medium");
+        assert_eq!(EncoderPreference::Auto.x264_preset(), "medium");
+        assert_eq!(EncoderPreference::CpuSlow.x264_preset(), "slow");
         assert_eq!(
             resolve_hardware_encoder(EncoderPreference::Auto, &capabilities),
             Some(HardwareEncoder::NvencH264)

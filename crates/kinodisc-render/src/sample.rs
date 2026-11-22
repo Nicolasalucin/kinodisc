@@ -188,6 +188,7 @@ pub async fn quality_sample(
                 fps,
                 duration_ms: seconds * 1000,
                 hardware_encoder: None,
+                x264_preset: "medium",
                 video_copy: false,
             };
             let spec = kinodisc_avchd::ResolutionSpec::from_config(config);

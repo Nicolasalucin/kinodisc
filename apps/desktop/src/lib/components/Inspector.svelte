@@ -16,6 +16,7 @@
   import { commands } from "../api/bindings";
   import { projectStore } from "../stores/project.svelte";
   import { basename, formatBytes, formatDuration, parseDecimal } from "../utils/format";
+  import { ac3Choices, ac3TrackValid } from "../utils/audio";
 
   let localError = $state<string | null>(null);
 
@@ -968,11 +969,16 @@
                 value={episode.audio[0].ac3Kbps}
                 onchange={(event) => setAudioBitrate(Number(event.currentTarget.value))}
               >
-                {#each [128, 192, 224, 256, 320, 384, 448] as kbps}
+                {#each ac3Choices(episode.audio[0].format === "ac3Surround51", episode.audio[0].ac3Kbps) as kbps}
                   <option value={kbps}>{kbps} kbps</option>
                 {/each}
               </select>
             </label>
+            {#if !ac3TrackValid(episode.audio[0])}
+              <p class="text-[11px] leading-4 text-rose-300" role="alert">
+                {t("Esta tasa no se admite: elige otra de la lista (en 5.1, 192 kbps o más).")}
+              </p>
+            {/if}
           {/if}
 
           <div class="rounded-lg border border-slate-800 p-2">

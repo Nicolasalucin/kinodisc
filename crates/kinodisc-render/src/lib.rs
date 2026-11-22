@@ -1575,6 +1575,16 @@ async fn render_avchd_project(
         )
         .await;
     }
+    if hardware_encoder.is_none() {
+        log(
+            &events,
+            format!(
+                "Codificación AVCHD por CPU: x264, preset {}.",
+                options.hardware_encoding.x264_preset()
+            ),
+        )
+        .await;
+    }
     let episodes_dir = output_dir.join("episodes");
     let total = project.episodes.len().max(1);
     let mut stream_inputs = Vec::with_capacity(project.episodes.len());
@@ -1771,12 +1781,19 @@ async fn render_avchd_project(
                 // Whether this disc carries subtitles changes the episode MKV
                 // (QA 1.1.3: an MKV made without them was reused on a disc
                 // that needed them, so the Blu-ray lost its subtitles).
+                // The x264 preset joins the key only when it is not the
+                // historical `medium`, so earlier caches stay valid.
                 profile: format!(
-                    "{:?}:{:?}:{}:{}",
+                    "{:?}:{:?}:{}:{}{}",
                     config.resolution,
                     hardware_encoder,
                     if video_copy { "copy" } else { "encode" },
-                    if pgs_enabled { "pgs" } else { "nopgs" }
+                    if pgs_enabled { "pgs" } else { "nopgs" },
+                    match options.hardware_encoding.x264_preset() {
+                        "medium" => String::new(),
+                        preset if hardware_encoder.is_none() => format!(":x264-{preset}"),
+                        _ => String::new(),
+                    }
                 ),
                 gop_frames: config.keyint_frames,
                 b_frames: 3,
@@ -1930,6 +1947,7 @@ async fn render_avchd_project(
             fps: source_fps,
             duration_ms,
             hardware_encoder: if video_copy { None } else { hardware_encoder },
+            x264_preset: options.hardware_encoding.x264_preset(),
             video_copy,
         };
         let stream_mkv = if let Some(artifact) = cached {

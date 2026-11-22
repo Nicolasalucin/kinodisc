@@ -964,6 +964,17 @@ export const it: Dictionary = {
   "Carpeta donde copiar los títulos": "Cartella in cui copiare i titoli",
   "Cifrado: se puede ver, pero no importar.": "Cifrato: si può vedere, ma non importare.",
   "Disco de datos": "Disco dati",
+  "Codificación AVCHD por CPU: x264, preset {preset}.": "Codifica AVCHD su CPU: x264, preset {preset}.",
+  "Esta tasa no se admite: elige otra de la lista (en 5.1, 192 kbps o más).": "Questo bitrate non è supportato: scegline un altro dall'elenco (in 5.1, almeno 192 kbps).",
+  "recomendado": "consigliato",
+  "Automático ({encoder}; si falla, CPU medio)": "Automatico ({encoder}; se fallisce, CPU medio)",
+  "Automático (CPU medio)": "Automatico (CPU medio)",
+  "CPU rápido (x264 fast): ~0,7× el tiempo, algo menos de calidad": "CPU veloce (x264 fast): ~0,7× il tempo, qualità un po' inferiore",
+  "CPU medio (x264 medium): equilibrado": "CPU medio (x264 medium): bilanciato",
+  "CPU lento (x264 slow): ~2× el tiempo, la mejor calidad": "CPU lento (x264 slow): ~2× il tempo, la qualità migliore",
+  "{encoder} (GPU): lo más rápido, menos calidad a tasas bajas": "{encoder} (GPU): il più veloce, meno qualità a bitrate bassi",
+  "El tamaño del disco es el mismo con cualquier opción: el plan ya reparte todo el espacio. Cambian la calidad y el tiempo.": "La dimensione del disco è la stessa con ogni opzione: il piano distribuisce già tutto lo spazio. Cambiano solo qualità e tempo.",
+  "Este formato (entrelazado o PsF) se codifica siempre por CPU.": "Questo formato (interlacciato o PsF) viene sempre codificato dalla CPU.",
   "Elige una velocidad menor.": "Scegli una velocità più bassa.",
   "Ya existe una imagen con esa etiqueta en la carpeta de salida. Cambia la etiqueta o elige otra carpeta.": "Nella cartella di uscita esiste già un’immagine con questa etichetta. Cambia l’etichetta o scegli un’altra cartella.",
   "Detalles técnicos": "Dettagli tecnici",
@@ -1515,6 +1526,7 @@ export const it: Dictionary = {
 };
 
 export const DIAGNOSTIC_IT: Record<string, string> = {
+  E_AC3_KBPS: "Questo bitrate AC-3 non è supportato. Usa 64, 96, 128, 192 kbps o un altro valore standard; il 5.1 richiede almeno 192 kbps.",
   E_ACTION_CHAPTER_MISSING: "Un pulsante salta a un capitolo che non esiste più.",
   E_ACTION_EPISODE_MISSING: "Un pulsante riproduce un episodio che non esiste più.",
   E_ACTION_MENU_MISSING: "Un pulsante apre un menu che non esiste più.",

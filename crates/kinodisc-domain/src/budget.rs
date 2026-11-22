@@ -88,7 +88,7 @@ impl BudgetPolicy {
                 "El rango de bitrate de video no es válido.",
             ));
         }
-        if !matches!(self.default_ac3_kbps, 192 | 224 | 256 | 320 | 384 | 448) {
+        if !crate::project::AC3_BITRATES_KBPS.contains(&self.default_ac3_kbps) {
             diagnostics.push(Diagnostic::warning(
                 "W_AC3_KBPS",
                 "El bitrate AC-3 por defecto no es uno de los valores habituales de DVD.",

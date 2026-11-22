@@ -166,6 +166,21 @@ Every image is checked by the structural verifier before it can be burned.
 (a 60-second countdown lets you cancel). Either way, Kinodisc plays a sound
 and flashes in the taskbar when it finishes.
 
+### Choose the encoder (AVCHD and Blu-ray)
+
+In the production window, **H.264 encoding** offers: Automatic (the GPU if
+it works, otherwise CPU medium), CPU fast, CPU medium, CPU slow and each GPU
+that works on your computer. The recommended option is marked: CPU slow when
+the disc holds many hours (a low bitrate), CPU medium otherwise. **The disc
+size does not change** with any option, because the plan already shares out
+all the space: quality and time change (CPU fast takes about 0.7 times as
+long as CPU medium; CPU slow, about 2 times). Interlaced (480i, 576i, 1080i)
+and PsF formats always use the CPU.
+
+AC-3 audio accepts 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384 and
+448 kbps (192 or more for 5.1). With many hours on one disc, lowering the
+audio to 96 or 128 kbps leaves more room for the video.
+
 ### Cover and label
 
 **Disc › Cover and label…** makes the case cover (DVD 273×183 mm, Blu-ray

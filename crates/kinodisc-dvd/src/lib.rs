@@ -216,7 +216,7 @@ impl EncodeRequest {
             ));
         }
         for audio in &self.audio_tracks {
-            if !matches!(audio.bitrate_kbps, 192 | 224 | 256 | 320 | 384 | 448) {
+            if !kinodisc_domain::ac3_bitrate_supported(audio.bitrate_kbps, audio.channels) {
                 return Err(EncodeError::InvalidConfig(format!(
                     "bitrate AC-3 no soportado: {} kbps",
                     audio.bitrate_kbps
@@ -1496,6 +1496,22 @@ mod tests {
         let mut req = request();
         req.video.maxrate_kbps = 1_000;
         assert!(matches!(req.validate(), Err(EncodeError::InvalidConfig(_))));
+    }
+
+    #[test]
+    fn standard_low_ac3_bitrates_are_accepted() {
+        for kbps in [64, 96, 128, 160, 192, 448] {
+            let mut req = request();
+            req.audio_tracks[0].bitrate_kbps = kbps;
+            req.audio_tracks[0].channels = 2;
+            assert!(req.validate().is_ok(), "{kbps} kbps");
+        }
+        let mut req = request();
+        req.audio_tracks[0].bitrate_kbps = 100;
+        assert!(req.validate().is_err());
+        req.audio_tracks[0].bitrate_kbps = 96;
+        req.audio_tracks[0].channels = 6;
+        assert!(req.validate().is_err(), "5.1 at 96 kbps");
     }
 
     fn motion_button(index: usize, shape: ButtonShapeMask) -> MotionButtonEncode {

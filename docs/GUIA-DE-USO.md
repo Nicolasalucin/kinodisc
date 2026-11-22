@@ -169,6 +169,21 @@ El verificador estructural revisa cada imagen antes de permitir grabarla.
 cuenta regresiva de 60 segundos permite cancelarlo). En cualquier caso,
 Kinodisc suena y parpadea en la barra de tareas al terminar.
 
+### Elegir el codificador (AVCHD y Blu-ray)
+
+En la ventana de producción, **Codificación H.264** ofrece: Automático (la
+GPU si funciona; si no, CPU medio), CPU rápido, CPU medio, CPU lento y cada
+GPU que funcione en tu equipo. La opción recomendada aparece marcada: CPU
+lento cuando el disco lleva muchas horas (poca tasa de bits), CPU medio en el
+resto. **El tamaño del disco no cambia** con ninguna opción, porque el plan
+ya reparte todo el espacio: cambian la calidad y el tiempo (CPU rápido tarda
+unas 0,7 veces lo que CPU medio; CPU lento, unas 2 veces). Los formatos
+entrelazados (480i, 576i, 1080i) y PsF siempre usan la CPU.
+
+El audio AC-3 admite 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384 y
+448 kbps (en 5.1, 192 o más). Con muchas horas en un disco, bajar el audio a
+96 o 128 kbps deja más espacio para el vídeo.
+
 ### Carátula y etiqueta
 
 **Disco › Carátula y etiqueta…** crea la carátula de la caja (DVD 273×183 mm,

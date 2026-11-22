@@ -964,6 +964,17 @@ export const de: Dictionary = {
   "Carpeta donde copiar los títulos": "Ordner für die kopierten Titel",
   "Cifrado: se puede ver, pero no importar.": "Verschlüsselt: ansehen ja, importieren nein.",
   "Disco de datos": "Datendisc",
+  "Codificación AVCHD por CPU: x264, preset {preset}.": "AVCHD-Kodierung auf der CPU: x264, Preset {preset}.",
+  "Esta tasa no se admite: elige otra de la lista (en 5.1, 192 kbps o más).": "Diese Bitrate wird nicht unterstützt: Wähle eine andere aus der Liste (bei 5.1 mindestens 192 kbps).",
+  "recomendado": "empfohlen",
+  "Automático ({encoder}; si falla, CPU medio)": "Automatisch ({encoder}; bei Fehler CPU mittel)",
+  "Automático (CPU medio)": "Automatisch (CPU mittel)",
+  "CPU rápido (x264 fast): ~0,7× el tiempo, algo menos de calidad": "CPU schnell (x264 fast): ~0,7× die Zeit, etwas weniger Qualität",
+  "CPU medio (x264 medium): equilibrado": "CPU mittel (x264 medium): ausgewogen",
+  "CPU lento (x264 slow): ~2× el tiempo, la mejor calidad": "CPU langsam (x264 slow): ~2× die Zeit, beste Qualität",
+  "{encoder} (GPU): lo más rápido, menos calidad a tasas bajas": "{encoder} (GPU): am schnellsten, weniger Qualität bei niedrigen Bitraten",
+  "El tamaño del disco es el mismo con cualquier opción: el plan ya reparte todo el espacio. Cambian la calidad y el tiempo.": "Die Discgröße ist bei jeder Option gleich: Der Plan verteilt bereits den ganzen Platz. Nur Qualität und Zeit ändern sich.",
+  "Este formato (entrelazado o PsF) se codifica siempre por CPU.": "Dieses Format (interlaced oder PsF) wird immer auf der CPU kodiert.",
   "Elige una velocidad menor.": "Wähle eine niedrigere Geschwindigkeit.",
   "Ya existe una imagen con esa etiqueta en la carpeta de salida. Cambia la etiqueta o elige otra carpeta.": "Im Ausgabeordner gibt es bereits ein Abbild mit dieser Bezeichnung. Ändere die Bezeichnung oder wähle einen anderen Ordner.",
   "Detalles técnicos": "Technische Details",
@@ -1515,6 +1526,7 @@ export const de: Dictionary = {
 };
 
 export const DIAGNOSTIC_DE: Record<string, string> = {
+  E_AC3_KBPS: "Diese AC-3-Bitrate wird nicht unterstützt. Verwende 64, 96, 128, 192 kbps oder eine andere Standardrate; 5.1 braucht 192 kbps oder mehr.",
   E_ACTION_CHAPTER_MISSING: "Eine Schaltfläche springt zu einem Kapitel, das nicht mehr existiert.",
   E_ACTION_EPISODE_MISSING: "Eine Schaltfläche spielt eine Episode, die nicht mehr existiert.",
   E_ACTION_MENU_MISSING: "Eine Schaltfläche öffnet ein Menü, das nicht mehr existiert.",

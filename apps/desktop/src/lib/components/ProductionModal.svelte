@@ -21,6 +21,7 @@
   import { compositeProjectMenus } from "../production";
   import { projectStore } from "../stores/project.svelte";
   import { basename, formatBytes, safeFileName } from "../utils/format";
+  import { cpuOnlyFormat, encoderPreference, HARDWARE_LABELS, recommendedEncoder, type EncoderChoice } from "../utils/encoder";
 
   // The output folder is remembered between productions (on this computer).
   const OUTPUT_KEY = "kinodisc_output_dir";
@@ -70,7 +71,7 @@
   function clampCopies(value: number): number {
     return Number.isFinite(value) ? Math.min(MAX_COPIES, Math.max(1, Math.round(value))) : 1;
   }
-  let hardwareEncoding = $state<"auto" | "cpuOnly">("auto");
+  let encoderChoice = $state<EncoderChoice>("auto");
   // "One disc per episode" and the like are remembered per project.
   type DiscSplit = "single" | "fitToDisc" | "perEpisode";
   const splitKey = `kinodisc_split_${projectStore.project?.id ?? ""}`;
@@ -96,9 +97,42 @@
   const project = $derived(projectStore.project);
   const devices = $derived(projectStore.devices);
   const isAvchd = $derived(project?.disc.mode === "avchd");
-  const hardwareEncoder = $derived(
-    isAvchd ? projectStore.toolsReport?.hardwareEncoders?.h264?.[0] ?? null : null,
-  );
+  // Interlaced/PsF formats never use the GPU (the engine keeps them on x264).
+  const cpuOnly = $derived(cpuOnlyFormat(project));
+  const hardwareEncoders = $derived(isAvchd && !cpuOnly ? (projectStore.toolsReport?.hardwareEncoders?.h264 ?? []) : []);
+  const recommended = $derived(recommendedEncoder(project, projectStore.plan?.videoKbps));
+  /** What the chosen option will actually use, for the header line. */
+  const hardwareEncoder = $derived.by(() => {
+    if (!isAvchd || cpuOnly) return null;
+    if (encoderChoice === "auto") return hardwareEncoders[0] ? HARDWARE_LABELS[hardwareEncoders[0]] : null;
+    return encoderChoice.startsWith("hw:") ? HARDWARE_LABELS[encoderChoice.slice(3) as keyof typeof HARDWARE_LABELS] : null;
+  });
+  const encoderOptions = $derived.by(() => {
+    const mark = (choice: EncoderChoice, label: string) =>
+      choice === recommended ? `${label} · ${t("recomendado")}` : label;
+    const options: Array<{ value: EncoderChoice; label: string }> = [
+      {
+        value: "auto",
+        label: hardwareEncoders.length
+          ? t("Automático ({encoder}; si falla, CPU medio)", { encoder: HARDWARE_LABELS[hardwareEncoders[0]] })
+          : t("Automático (CPU medio)"),
+      },
+      { value: "cpuFast", label: mark("cpuFast", t("CPU rápido (x264 fast): ~0,7× el tiempo, algo menos de calidad")) },
+      { value: "cpuOnly", label: mark("cpuOnly", t("CPU medio (x264 medium): equilibrado")) },
+      { value: "cpuSlow", label: mark("cpuSlow", t("CPU lento (x264 slow): ~2× el tiempo, la mejor calidad")) },
+      ...hardwareEncoders.map((encoder) => ({
+        value: `hw:${encoder}` as EncoderChoice,
+        label: t("{encoder} (GPU): lo más rápido, menos calidad a tasas bajas", { encoder: HARDWARE_LABELS[encoder] }),
+      })),
+    ];
+    return options;
+  });
+  // A GPU option that no longer applies (format changed) falls back to auto.
+  $effect(() => {
+    if (encoderChoice.startsWith("hw:") && !encoderOptions.some((option) => option.value === encoderChoice)) {
+      encoderChoice = "auto";
+    }
+  });
   const isBluRay = $derived(
     project?.disc.capacity === "bd25" || project?.disc.capacity === "bd50",
   );
@@ -437,7 +471,7 @@
         // name, so an "<name>.iso" made earlier is neither replaced nor removed.
         const isoName = mode === "folder" ? `${partName}.kinodisc-tmp.iso` : `${partName}.iso`;
         const outcome = await unwrap(
-          commands.renderStart(part.project, root, hardwareEncoding, isoName, channel),
+          commands.renderStart(part.project, root, encoderPreference(encoderChoice), isoName, channel),
         );
         elapsedMs += outcome.elapsedMs;
         projectStore.renderVerification = outcome.verification ?? null;
@@ -711,17 +745,22 @@
       </label>
 
       {#if isAvchd && mode !== "existing"}
-        <label class="mt-3 flex items-center justify-between gap-3 rounded-md border border-slate-700 px-3 py-2">
-          <span class="text-[13px] text-slate-300">{t("Codificación H.264")}</span>
-          <select
-            class="ui-input ui-input-sm"
-            bind:value={hardwareEncoding}
-            disabled={busy}
-          >
-            <option value="auto">{t("Hardware si está disponible")}</option>
-            <option value="cpuOnly">{t("Solo CPU (libx264)")}</option>
-          </select>
-        </label>
+        <div class="mt-3 rounded-md border border-slate-700 px-3 py-2">
+          <label class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+            <span class="text-[13px] text-slate-300">{t("Codificación H.264")}</span>
+            <select class="ui-input ui-input-sm min-w-0 max-w-full" bind:value={encoderChoice} disabled={busy}>
+              {#each encoderOptions as option (option.value)}
+                <option value={option.value}>{option.label}</option>
+              {/each}
+            </select>
+          </label>
+          <p class="ui-hint mt-1.5">
+            {t("El tamaño del disco es el mismo con cualquier opción: el plan ya reparte todo el espacio. Cambian la calidad y el tiempo.")}
+            {#if cpuOnly}
+              {t("Este formato (entrelazado o PsF) se codifica siempre por CPU.")}
+            {/if}
+          </p>
+        </div>
       {/if}
 
       <div class="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">

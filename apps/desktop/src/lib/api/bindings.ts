@@ -703,7 +703,15 @@ export type EncoderCapabilities_Serialize = {
 	probedAt: string | null,
 };
 
-export type EncoderPreference = "auto" | "cpuOnly" | { prefer: HardwareEncoder };
+export type EncoderPreference = 
+/**  The first working hardware encoder, otherwise x264 `medium`. */
+"auto" | 
+/**  x264 `fast`: quicker, a little less quality at the same size. */
+"cpuFast" | 
+/**  x264 `medium` (the historical "CPU only" choice). */
+"cpuOnly" | 
+/**  x264 `slow`: about twice the time of `medium`, best quality per byte. */
+"cpuSlow" | { prefer: HardwareEncoder };
 
 export type EncodingPriority = "low" | "medium" | "high";
 

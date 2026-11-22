@@ -163,6 +163,8 @@ pub struct AvchdEncodeRequest {
     pub duration_ms: u64,
     /// Resolved hardware encoder, or `None` for the CPU/libx264 path.
     pub hardware_encoder: Option<kinodisc_toolchain::HardwareEncoder>,
+    /// x264 preset for the CPU path (`fast`, `medium` or `slow`).
+    pub x264_preset: &'static str,
     /// Copy the compliant source video stream instead of re-encoding it.
     pub video_copy: bool,
 }
@@ -220,7 +222,7 @@ impl AvchdEncodeRequest {
             if audio.copy {
                 continue;
             }
-            if !matches!(audio.bitrate_kbps, 192 | 224 | 256 | 320 | 384 | 448) {
+            if !kinodisc_domain::ac3_bitrate_supported(audio.bitrate_kbps, audio.channels) {
                 return Err(AvchdError::InvalidConfig(format!(
                     "bitrate AC-3 no soportado: {} kbps",
                     audio.bitrate_kbps
@@ -512,7 +514,7 @@ pub fn build_encode_args(request: &AvchdEncodeRequest) -> Vec<String> {
             }
             args.extend([
                 "-preset".to_string(),
-                "medium".to_string(),
+                request.x264_preset.to_string(),
                 "-profile:v".to_string(),
                 "high".to_string(),
                 "-level:v".to_string(),
@@ -1150,6 +1152,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn standard_low_ac3_bitrates_are_accepted() {
+        for kbps in [64, 96, 128, 160, 192, 448] {
+            let mut req = request();
+            req.audios[0].bitrate_kbps = kbps;
+            req.audios[0].channels = 2;
+            assert!(req.validate().is_ok(), "{kbps} kbps");
+        }
+        let mut req = request();
+        req.audios[0].bitrate_kbps = 100;
+        assert!(req.validate().is_err());
+        req.audios[0].bitrate_kbps = 96;
+        req.audios[0].channels = 6;
+        assert!(req.validate().is_err(), "5.1 at 96 kbps");
+    }
+
     fn request() -> AvchdEncodeRequest {
         AvchdEncodeRequest {
             input: PathBuf::from("input.mp4"),
@@ -1186,6 +1204,7 @@ mod tests {
             fps: FrameRate::NTSC,
             duration_ms: 20_000,
             hardware_encoder: None,
+            x264_preset: "medium",
             video_copy: false,
         }
     }

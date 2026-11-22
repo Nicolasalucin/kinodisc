@@ -351,6 +351,15 @@ Smart Render Cache v2:
   single rule for HD subtitles and is part of the episode cache profile
   (`"pgs"`/`"nopgs"`).
 - **Interlaced and PsF HD** never use a hardware encoder.
+- **AC-3 bitrates**: one rule, `kinodisc_domain::ac3_bitrate_supported`
+  (`AC3_BITRATES_KBPS`, 64–448; 5.1 needs 192+), used by the DVD and AVCHD
+  encoders and by `Project::validate` (`E_AC3_KBPS`, skips passthrough,
+  counts channels with `EpisodeAudio::encoded_channels`). The UI list is
+  `apps/desktop/src/lib/utils/audio.ts`.
+- **x264 preset** comes from `EncoderPreference::x264_preset()` (`CpuFast`
+  fast, `CpuSlow` slow, everything else medium). It joins the episode cache
+  profile only when it is not `medium`, so older caches stay valid. The disc
+  size never depends on the encoder choice.
 - **Production output**: `render_start` works in
   `<output>/.kinodisc-work/<job>` and publishes only the named image (see
   section 17).

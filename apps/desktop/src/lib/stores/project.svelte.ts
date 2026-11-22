@@ -1764,7 +1764,9 @@ class ProjectStore {
         ...audio,
         ...patch,
         format,
-        ac3Kbps: patch.ac3Kbps ?? current.ac3Kbps,
+        // 5.1 needs at least 192 kbps: switching a low stereo track to 5.1
+        // raises it instead of leaving an invalid track.
+        ac3Kbps: format === "ac3Surround51" ? Math.max(192, patch.ac3Kbps ?? current.ac3Kbps) : (patch.ac3Kbps ?? current.ac3Kbps),
         delayMs: patch.delayMs ?? current.delayMs,
         gainDb: patch.gainDb ?? current.gainDb,
         default: patch.default ?? current.default,

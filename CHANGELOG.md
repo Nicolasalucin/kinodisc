@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.3 — 2026-11-21
+
+### Added
+
+- **Choose the H.264 encoder** for AVCHD and Blu-ray in the production window: Automatic, CPU fast (x264 `fast`, about 0.7× the time), CPU medium (x264 `medium`), CPU slow (x264 `slow`, about 2× the time, the best quality per byte) or each working GPU encoder (NVENC, Quick Sync, AMF, VA-API, VideoToolbox). The recommended option is marked: CPU slow when the disc holds many hours (a low bitrate), CPU medium otherwise. The disc size is the same with every option, because the plan already fills the disc; only quality and time change. Interlaced and PsF formats always use the CPU.
+- **`kinodisc-cli render --encoder`** with the same choices: `auto`, `cpu-fast`, `cpu-medium`, `cpu-slow`, `nvenc`, `qsv`, `amf`, `vaapi`, `videotoolbox`.
+
+### Fixed
+
+- **Any standard AC-3 bitrate from 64 kbps works.** DVD and AVCHD only accepted 192 kbps and up, so the 128 kbps the app offered, or 96 kbps in a project, made the render fail with "bitrate AC-3 no soportado". Now 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384 and 448 kbps work. 5.1 needs at least 192 kbps, and switching a track to 5.1 raises a lower bitrate to 192. Many hours on one disc can now save space on audio and give it to the video.
+- **A bad audio bitrate is reported before the render starts** (`E_AC3_KBPS`), in the app, in `kinodisc-cli plan` and in `render`, instead of failing in the middle. The project still opens in the app, the audio select is marked in red with the reason, and producing the disc waits until it is fixed.
+- Portuguese: about twenty interface words that were still in English (episodes, burning, button styles…) are translated.
+
 ## 1.2.2 — 2026-11-21
 
 ### Added

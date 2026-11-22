@@ -185,6 +185,7 @@ Guías paso a paso: [Español](docs/GUIA-DE-USO.md) · [English](docs/USER_GUIDE
 kinodisc-cli doctor                                  # herramientas y versiones
 kinodisc-cli toolchain install all                   # descargas verificadas (Windows)
 kinodisc-cli render proyecto.json -o salida --folder # ISO + carpeta VIDEO_TS/BDMV
+kinodisc-cli render proyecto.json --encoder cpu-slow # codificador H.264 (auto, cpu-fast, cpu-medium, nvenc…)
 kinodisc-cli split proyecto.json --per-episode       # un proyecto por disco
 kinodisc-cli scenes proyecto.json                    # menús de escenas desde los capítulos
 kinodisc-cli template proyecto.json multi-page-tv-grid  # plantilla de menú (--list)

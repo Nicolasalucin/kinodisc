@@ -180,6 +180,7 @@ Step-by-step guides: [English](docs/USER_GUIDE.md) · [Español](docs/GUIA-DE-US
 kinodisc-cli doctor                                  # tools and versions
 kinodisc-cli toolchain install all                   # verified downloads (Windows)
 kinodisc-cli render project.json -o out --folder     # ISO + VIDEO_TS/BDMV folder
+kinodisc-cli render project.json --encoder cpu-slow  # H.264 encoder (auto, cpu-fast, cpu-medium, nvenc…)
 kinodisc-cli split project.json --per-episode        # one project per disc
 kinodisc-cli scenes project.json                     # add scene menus from chapters
 kinodisc-cli template project.json multi-page-tv-grid  # apply a menu template (--list)

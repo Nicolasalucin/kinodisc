@@ -811,8 +811,33 @@ pub struct EpisodeAudio {
     pub mastering: AudioMastering,
 }
 
+impl EpisodeAudio {
+    /// Channels of the encoded AC-3 track: the channel mode wins over the
+    /// track format (the render uses the same rule).
+    pub fn encoded_channels(&self) -> u8 {
+        match self.mastering.channel_mode {
+            ChannelMode::Stereo | ChannelMode::DownmixStereo => 2,
+            ChannelMode::Surround51 | ChannelMode::Upmix51 => 6,
+            ChannelMode::Source => self.format.channels(),
+        }
+    }
+}
+
 fn default_ac3_kbps() -> u16 {
     192
+}
+
+/// Standard AC-3 bitrates Kinodisc encodes, up to the DVD-Video maximum.
+/// DVD-Video and AVCHD both accept AC-3 from 64 kbps.
+pub const AC3_BITRATES_KBPS: [u16; 12] = [64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448];
+
+/// Lowest bitrate offered for 5.1 AC-3: below it six channels sound broken.
+pub const AC3_MIN_SURROUND_KBPS: u16 = 192;
+
+/// Whether an AC-3 track at `kbps` with `channels` can be encoded and
+/// played (a standard rate; 5.1 needs at least 192 kbps).
+pub fn ac3_bitrate_supported(kbps: u16, channels: u8) -> bool {
+    AC3_BITRATES_KBPS.contains(&kbps) && (channels <= 2 || kbps >= AC3_MIN_SURROUND_KBPS)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, specta::Type)]
@@ -1190,6 +1215,15 @@ impl Project {
         }
 
         let mut episode_ids = HashSet::new();
+        if !ac3_bitrate_supported(self.disc.audio.ac3_kbps, self.disc.audio.channels) {
+            diagnostics.push(Diagnostic::error(
+                "E_AC3_KBPS",
+                format!(
+                    "La tasa AC-3 por defecto de {} kbps no se admite: usa 64, 96, 128, 192 kbps u otra tasa estándar (en 5.1, 192 kbps o más).",
+                    self.disc.audio.ac3_kbps
+                ),
+            ));
+        }
         for episode in &self.episodes {
             if !episode_ids.insert(episode.id) {
                 diagnostics.push(
@@ -1223,6 +1257,23 @@ impl Project {
                         Diagnostic::error(
                             "E_EPISODE_TRIM_MS",
                             "El fin del recorte debe ser posterior al inicio.",
+                        )
+                        .with_entity(format!("episode:{}", episode.id)),
+                    );
+                }
+            }
+            for (index, audio) in episode.audio.iter().enumerate() {
+                if !audio.mastering.passthrough
+                    && !ac3_bitrate_supported(audio.ac3_kbps, audio.encoded_channels())
+                {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "E_AC3_KBPS",
+                            format!(
+                                "La tasa AC-3 de {} kbps no se admite (pista {}): usa 64, 96, 128, 192 kbps u otra tasa estándar (en 5.1, 192 kbps o más).",
+                                audio.ac3_kbps,
+                                index + 1
+                            ),
                         )
                         .with_entity(format!("episode:{}", episode.id)),
                     );
@@ -2123,6 +2174,46 @@ mod tests {
             .filter(|diagnostic| diagnostic.severity == Severity::Error)
             .collect();
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn ac3_bitrate_is_checked_before_rendering() {
+        let has_code = |project: &Project| {
+            project
+                .validate()
+                .iter()
+                .any(|diagnostic| diagnostic.code.strip_prefix("E_") == Some("AC3_KBPS"))
+        };
+        let track = |kbps: u16, format: &str| -> EpisodeAudio {
+            serde_json::from_value(serde_json::json!({
+                "sourceStream": 1, "sourcePath": null, "language": "spa", "label": "Track 1",
+                "ac3Kbps": kbps, "format": format
+            }))
+            .expect("audio track")
+        };
+        let mut project = minimal_project();
+        for kbps in [64, 96, 128, 192, 448] {
+            project.episodes[0].audio = vec![track(kbps, "ac3Stereo")];
+            assert!(!has_code(&project), "{kbps} kbps must be accepted");
+        }
+        project.episodes[0].audio = vec![track(100, "ac3Stereo")];
+        assert!(has_code(&project), "100 kbps is not an AC-3 rate");
+        project.episodes[0].audio = vec![track(96, "ac3Surround51")];
+        assert!(has_code(&project), "5.1 needs 192 kbps or more");
+        project.episodes[0].audio = vec![track(192, "ac3Surround51")];
+        assert!(!has_code(&project));
+        project.episodes[0].audio = vec![track(96, "ac3Stereo")];
+        project.episodes[0].audio[0].mastering.channel_mode = ChannelMode::Upmix51;
+        assert!(
+            has_code(&project),
+            "an upmix to 5.1 is encoded with 6 channels"
+        );
+        project.episodes[0].audio = vec![track(100, "ac3Stereo")];
+        project.episodes[0].audio[0].mastering.passthrough = true;
+        assert!(!has_code(&project), "passthrough keeps the source bitrate");
+        let mut project = minimal_project();
+        project.disc.audio.ac3_kbps = 100;
+        assert!(has_code(&project), "the project default is checked too");
     }
 
     fn play_button(id: u128, action: ButtonAction) -> crate::menu::MenuButton {

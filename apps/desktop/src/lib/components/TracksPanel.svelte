@@ -7,6 +7,7 @@
   import LanguageSelect from "./LanguageSelect.svelte";
   import { languageEntry, normalizeLanguageCode } from "../i18n/languages";
   import { basename, formatDuration } from "../utils/format";
+  import { ac3Choices, ac3TrackValid } from "../utils/audio";
 
   const episode = $derived(projectStore.selectedEpisode);
   const asset = $derived(episode ? projectStore.assetFor(episode.video) : null);
@@ -322,11 +323,13 @@
                     <option value="ac3Surround51">{t("AC-3 5.1")}</option>
                   </select>
                   <select
-                    class="ui-input ui-input-sm"
+                    class={["ui-input ui-input-sm", !ac3TrackValid(track) && "border-rose-500 text-rose-200"]}
                     value={track.ac3Kbps}
+                    aria-invalid={!ac3TrackValid(track)}
+                    title={ac3TrackValid(track) ? undefined : t("Esta tasa no se admite: elige otra de la lista (en 5.1, 192 kbps o más).")}
                     onchange={(event) => setAudioBitrate(index, Number(event.currentTarget.value))}
                   >
-                    {#each [128, 192, 224, 256, 320, 384, 448] as kbps}
+                    {#each ac3Choices(track.format === "ac3Surround51", track.ac3Kbps) as kbps}
                       <option value={kbps}>{kbps} kbps</option>
                     {/each}
                   </select>

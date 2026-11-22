@@ -36,11 +36,12 @@ pub use navigation::{
 };
 pub use presets::PlayerPreset;
 pub use project::{
-    bdmv_frame_rate_code, AssetSource, AudioCodec, AudioDefaults, AudioFormat, AudioMastering,
-    AudioStreamInfo, AuthoringMode, AvchdResolution, AvchdVideoConfig, BurnPreferences,
-    ChannelMode, Chapter, DiscCapacity, DiscConfig, DvdProfile, DvdVideoConfig, EncodeOverride,
-    EncodingPriority, Episode, EpisodeAudio, FirstPlay, H264Level, HdScan, LayerBreakMode,
-    LoudnessTarget, MediaAsset, MediaChapter, MediaKind, MediaProbe, PlayAllConfig, PostAction,
-    Project, ProxyInfo, SubtitleAlignment, SubtitleStreamInfo, SubtitleStyle, SubtitleTrack,
-    VideoConfig, VideoEncodeMode, VideoScaleMode, VideoStreamInfo,
+    ac3_bitrate_supported, bdmv_frame_rate_code, AssetSource, AudioCodec, AudioDefaults,
+    AudioFormat, AudioMastering, AudioStreamInfo, AuthoringMode, AvchdResolution, AvchdVideoConfig,
+    BurnPreferences, ChannelMode, Chapter, DiscCapacity, DiscConfig, DvdProfile, DvdVideoConfig,
+    EncodeOverride, EncodingPriority, Episode, EpisodeAudio, FirstPlay, H264Level, HdScan,
+    LayerBreakMode, LoudnessTarget, MediaAsset, MediaChapter, MediaKind, MediaProbe, PlayAllConfig,
+    PostAction, Project, ProxyInfo, SubtitleAlignment, SubtitleStreamInfo, SubtitleStyle,
+    SubtitleTrack, VideoConfig, VideoEncodeMode, VideoScaleMode, VideoStreamInfo,
+    AC3_BITRATES_KBPS, AC3_MIN_SURROUND_KBPS,
 };

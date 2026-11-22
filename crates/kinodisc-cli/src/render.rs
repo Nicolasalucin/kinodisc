@@ -19,6 +19,26 @@ pub(crate) struct RenderArgs {
     pub(crate) no_probe: bool,
     pub(crate) mode: Option<AuthoringMode>,
     pub(crate) avchd_folder: bool,
+    /// H.264 encoder for AVCHD/Blu-ray (DVD-Video always uses MPEG-2).
+    pub(crate) encoder: EncoderPreference,
+}
+
+/// `--encoder` values: `auto`, `cpu-fast`, `cpu-medium`, `cpu-slow`, or a
+/// hardware encoder (`nvenc`, `qsv`, `amf`, `vaapi`, `videotoolbox`).
+pub(crate) fn parse_encoder(value: &str) -> Option<EncoderPreference> {
+    use kinodisc_toolchain::HardwareEncoder;
+    Some(match value.to_ascii_lowercase().as_str() {
+        "auto" => EncoderPreference::Auto,
+        "cpu-fast" | "fast" => EncoderPreference::CpuFast,
+        "cpu" | "cpu-medium" | "medium" => EncoderPreference::CpuOnly,
+        "cpu-slow" | "slow" => EncoderPreference::CpuSlow,
+        "nvenc" => EncoderPreference::Prefer(HardwareEncoder::NvencH264),
+        "qsv" => EncoderPreference::Prefer(HardwareEncoder::QsvH264),
+        "amf" => EncoderPreference::Prefer(HardwareEncoder::AmfH264),
+        "vaapi" => EncoderPreference::Prefer(HardwareEncoder::VaapiH264),
+        "videotoolbox" => EncoderPreference::Prefer(HardwareEncoder::VideoToolboxH264),
+        _ => return None,
+    })
 }
 
 pub async fn run(args: &[String]) -> ExitCode {
@@ -142,7 +162,7 @@ pub(crate) async fn render(args: &RenderArgs) -> Result<PathBuf, String> {
             probe_assets: false,
             composited_backgrounds: None,
             cancel: Some(Arc::clone(&cancel)),
-            hardware_encoding: EncoderPreference::Auto,
+            hardware_encoding: args.encoder,
             mux_backend: kinodisc_render::MuxBackend::Auto,
         },
         sender,
@@ -204,6 +224,7 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
     let mut no_probe = false;
     let mut mode = None;
     let mut avchd_folder = false;
+    let mut encoder = EncoderPreference::Auto;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -216,6 +237,17 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
             }
             "--no-probe" => no_probe = true,
             "--folder" | "--avchd-folder" => avchd_folder = true,
+            "--encoder" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("Falta el valor de --encoder.".to_string());
+                };
+                encoder = parse_encoder(value).ok_or_else(|| {
+                    format!(
+                        "Codificador desconocido: {value}. Usa auto, cpu-fast, cpu-medium, cpu-slow, nvenc, qsv, amf, vaapi o videotoolbox."
+                    )
+                })?;
+            }
             "--mode" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -243,13 +275,14 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
     }
     Ok(RenderArgs {
         project: project.ok_or_else(|| {
-            "Uso: kinodisc-cli render <project.json> [-o <dir>] [--mode dvd|avchd] [--folder] [--no-probe]"
+            "Uso: kinodisc-cli render <project.json> [-o <dir>] [--mode dvd|avchd] [--encoder <tipo>] [--folder] [--no-probe]"
                 .to_string()
         })?,
         output,
         no_probe,
         mode,
         avchd_folder,
+        encoder,
     })
 }
 
@@ -260,4 +293,33 @@ fn absolute_output(output: &Path) -> Result<PathBuf, String> {
     std::env::current_dir()
         .map(|cwd| cwd.join(output))
         .map_err(|error| format!("No se pudo resolver el directorio de salida: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encoder_option_parses_every_choice() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec!["p.json".to_string()];
+            args.extend(extra.iter().map(|value| value.to_string()));
+            parse_render_args(&args)
+        };
+        assert_eq!(parse(&[]).unwrap().encoder, EncoderPreference::Auto);
+        assert_eq!(
+            parse(&["--encoder", "cpu-slow"]).unwrap().encoder,
+            EncoderPreference::CpuSlow
+        );
+        assert_eq!(
+            parse(&["--encoder", "CPU-MEDIUM"]).unwrap().encoder,
+            EncoderPreference::CpuOnly
+        );
+        assert_eq!(
+            parse(&["--encoder", "amf"]).unwrap().encoder,
+            EncoderPreference::Prefer(kinodisc_toolchain::HardwareEncoder::AmfH264)
+        );
+        assert!(parse(&["--encoder", "turbo"]).is_err());
+        assert!(parse(&["--encoder"]).is_err());
+    }
 }

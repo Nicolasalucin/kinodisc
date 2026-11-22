@@ -763,7 +763,8 @@ impl<'a> UdfReader<'a> {
             if path.is_empty() && descriptor[27] != if stream_directory { 13 } else { 4 } {
                 return Err(bad("root directory file type mismatch"));
             }
-            if !matches!(descriptor[27], 4 | 5 | 12 | 13) {
+            // 249 is a real-time file (Blu-ray/AVCHD `.m2ts`): read as a file.
+            if !matches!(descriptor[27], 4 | 5 | 12 | 13 | 249) {
                 return Err(Error::Unsupported("UDF special file type".into()));
             }
             let size = u64_at(descriptor, 56)?;

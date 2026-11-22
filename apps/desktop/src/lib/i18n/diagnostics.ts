@@ -257,6 +257,8 @@ const CHECK_TITLES: Record<string, string> = {
   "BDMV-MPLS": "Listas de reproducción",
   "BDMV-CLPI": "Información de los clips",
   "BDMV-M2TS": "Formato de los vídeos (M2TS)",
+  "BDMV-ATS": "Tiempos de llegada de los paquetes",
+  "BDMV-SIT": "Tabla de selección (SIT)",
   "BDMV-PID": "Vídeo y audio declarados",
   "BDMV-AUDIO-STREAM": "Pista de audio",
   "BDMV-IG": "Menú interactivo",

@@ -362,12 +362,14 @@ fn check_streams(reader: &UdfReader<'_>, checks: &mut CheckList) {
     let streams = paths_with_prefix(reader, "BDMV/STREAM/");
     let mut checked = 0usize;
     let mut pmt_streams = Vec::new();
+    let mut ats_bad = Vec::new();
+    let mut sit_missing = Vec::new();
     for path in &streams {
         if !path.ends_with(".m2ts") {
             continue;
         }
         checked += 1;
-        let prefix = match read_prefix(reader, path, 192 * 64) {
+        let prefix = match read_prefix(reader, path, 192 * 512) {
             Ok(prefix) => prefix,
             Err(error) => {
                 fail_with(checks, "BDMV-M2TS", error, path, None);
@@ -402,6 +404,50 @@ fn check_streams(reader: &UdfReader<'_>, checks: &mut CheckList) {
             continue;
         }
         pmt_streams.extend(parse_pmt_streams(&prefix));
+        let backward = ats_backward_steps(&prefix);
+        if backward > 0 {
+            ats_bad.push(format!(
+                "{path} ({backward} de {} paquetes)",
+                prefix.len() / 192
+            ));
+        }
+        if pat_announces_sit(&prefix) == Some(false) {
+            sit_missing.push(path.clone());
+        }
+    }
+    if ats_bad.is_empty() {
+        checks.pass(
+            "BDMV-ATS",
+            "Los tiempos de llegada (ATS) de los paquetes avanzan siempre.",
+        );
+    } else {
+        fail_with(
+            checks,
+            "BDMV-ATS",
+            format!(
+                "Los tiempos de llegada (ATS) retroceden en {}: los reproductores de hardware rechazan el disco. Vuelve a generarlo con Kinodisc 1.2.6 o posterior.",
+                ats_bad.join(", ")
+            ),
+            "BDMV/STREAM",
+            None,
+        );
+    }
+    if sit_missing.is_empty() {
+        checks.pass(
+            "BDMV-SIT",
+            "La PAT anuncia la tabla de selección (SIT, PID 0x1F).",
+        );
+    } else {
+        warn_with(
+            checks,
+            "BDMV-SIT",
+            format!(
+                "La PAT no anuncia la tabla de selección (SIT) en {}.",
+                sit_missing.join(", ")
+            ),
+            "BDMV/STREAM",
+            None,
+        );
     }
     if checked == 0 {
         fail_with(
@@ -490,6 +536,53 @@ fn check_streams(reader: &UdfReader<'_>, checks: &mut CheckList) {
             None,
         );
     }
+}
+
+/// Packets whose arrival time stamp (low 30 bits of the 4-byte header, a
+/// 27 MHz clock that wraps) is earlier than the one before. A BDAV muxer
+/// never goes back; FFmpeg's VBR M2TS mode (Kinodisc ≤ 1.2.5) does almost
+/// every packet.
+fn ats_backward_steps(prefix: &[u8]) -> usize {
+    let stamps: Vec<u32> = prefix
+        .as_chunks::<192>()
+        .0
+        .iter()
+        .map(|packet| {
+            u32::from_be_bytes([packet[0], packet[1], packet[2], packet[3]]) & 0x3FFF_FFFF
+        })
+        .collect();
+    stamps
+        .windows(2)
+        .filter(|pair| (pair[1].wrapping_sub(pair[0]) & 0x3FFF_FFFF) > 0x2000_0000)
+        .count()
+}
+
+/// Whether the first PAT lists program 0 on PID 0x1F (the SIT that BDAV
+/// streams carry); `None` when the prefix has no PAT.
+fn pat_announces_sit(prefix: &[u8]) -> Option<bool> {
+    for packet in prefix.as_chunks::<192>().0 {
+        let ts = &packet[4..];
+        let pid = (((ts[1] & 0x1F) as u16) << 8) | ts[2] as u16;
+        if pid != 0 || ts[1] & 0x40 == 0 || ts[3] & 0x10 == 0 {
+            continue;
+        }
+        let start = if ts[3] & 0x20 != 0 {
+            5 + ts[4] as usize
+        } else {
+            4
+        };
+        let section = ts.get(start + 1 + *ts.get(start)? as usize..)?;
+        if section.len() < 12 || section[0] != 0 {
+            return None;
+        }
+        let length = (((section[1] & 0x0F) as usize) << 8) | section[2] as usize;
+        let entries = section.get(8..(3 + length).saturating_sub(4))?;
+        return Some(entries.as_chunks::<4>().0.iter().any(|entry| {
+            u16::from_be_bytes([entry[0], entry[1]]) == 0
+                && (((entry[2] & 0x1F) as u16) << 8 | entry[3] as u16) == 0x1F
+        }));
+    }
+    None
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -765,7 +858,7 @@ fn parse_pmt_streams(prefix: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod mark_tests {
-    use super::playlist_mark_problem;
+    use super::{ats_backward_steps, pat_announces_sit, playlist_mark_problem};
 
     fn playlist(marks: &[(u8, u32)], declared: Option<u32>) -> Vec<u8> {
         let mut bytes = vec![0u8; 58];
@@ -804,5 +897,50 @@ mod mark_tests {
         assert!(playlist_mark_problem(&playlist(&[(1, 1000), (1, 3000)], Some(32))).is_err());
         assert!(playlist_mark_problem(&playlist(&[(1, 9000)], None)).is_err());
         assert!(playlist_mark_problem(&playlist(&[(7, 1000)], None)).is_err());
+    }
+
+    fn packet(ats: u32, pid: u16, section: Option<&[u8]>) -> Vec<u8> {
+        let mut packet = vec![0xFFu8; 192];
+        packet[..4].copy_from_slice(&ats.to_be_bytes());
+        packet[4] = 0x47;
+        packet[5] = if section.is_some() { 0x40 } else { 0 } | (pid >> 8) as u8;
+        packet[6] = pid as u8;
+        packet[7] = 0x10;
+        if let Some(section) = section {
+            packet[8] = 0;
+            packet[9..9 + section.len()].copy_from_slice(section);
+        }
+        packet
+    }
+
+    #[test]
+    fn arrival_times_going_back_are_counted_but_the_clock_wrap_is_not() {
+        let rising: Vec<u8> = [0x3FFF_FD00u32, 0x3FFF_FE60, 0x3FFF_FFC0, 0x0120, 0x0480]
+            .iter()
+            .flat_map(|ats| packet(*ats, 0x1011, None))
+            .collect();
+        assert_eq!(ats_backward_steps(&rising), 0);
+        // Kinodisc 1.2.5: each packet ~879 million ticks later, wrapping.
+        let ffmpeg: Vec<u8> = [341_154_009u32, 146_964_735, 1_026_517_284, 832_328_010]
+            .iter()
+            .flat_map(|ats| packet(*ats, 0x1011, None))
+            .collect();
+        assert_eq!(ats_backward_steps(&ffmpeg), 3);
+    }
+
+    #[test]
+    fn the_pat_has_to_announce_the_sit() {
+        // tsMuxeR: program 0 -> 0x1F, program 1 -> 0x100.
+        let tsmuxer = [
+            0x00, 0xb0, 0x11, 0x00, 0x00, 0xc1, 0x00, 0x00, 0x00, 0x00, 0xe0, 0x1f, 0x00, 0x01,
+            0xe1, 0x00, 0x23, 0x5a, 0xab, 0x82,
+        ];
+        assert_eq!(pat_announces_sit(&packet(0, 0, Some(&tsmuxer))), Some(true));
+        // FFmpeg: only program 1.
+        let ffmpeg = [
+            0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00, 0, 0, 0, 0,
+        ];
+        assert_eq!(pat_announces_sit(&packet(0, 0, Some(&ffmpeg))), Some(false));
+        assert_eq!(pat_announces_sit(&packet(0, 0x1011, None)), None);
     }
 }

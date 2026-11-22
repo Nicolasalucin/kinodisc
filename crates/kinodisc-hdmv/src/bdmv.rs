@@ -466,7 +466,7 @@ fn ts_payload_start(ts: &[u8]) -> Option<usize> {
     }
 }
 
-fn mpeg_crc32(bytes: &[u8]) -> u32 {
+pub(crate) fn mpeg_crc32(bytes: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for byte in bytes {
         crc ^= (*byte as u32) << 24;

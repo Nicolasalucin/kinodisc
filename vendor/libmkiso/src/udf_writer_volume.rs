@@ -300,11 +300,14 @@ fn metadata_entry(
     put16(&mut bytes, 20, 4);
     put16(&mut bytes, 24, 1);
     bytes[27] = file_type;
-    put16(&mut bytes, 34, 1);
+    // UDF 2.50 2.2.13 (short_ad, as Blu-ray authoring tools record it:
+    // archive flag, no permissions, link count 0) or the historical long_ad.
+    let short = options.metadata_short_ad;
+    put16(&mut bytes, 34, if short { 0x0020 } else { 1 });
     put32(&mut bytes, 36, u32::MAX);
     put32(&mut bytes, 40, u32::MAX);
-    put32(&mut bytes, 44, 0x1084);
-    put16(&mut bytes, 48, 1);
+    put32(&mut bytes, 44, if short { 0 } else { 0x1084 });
+    put16(&mut bytes, 48, if short { 0 } else { 1 });
     put64(&mut bytes, 56, u64::from(length));
     put64(&mut bytes, 64, u64::from(length));
     put64(&mut bytes, 72, u64::from(length.div_ceil(BLOCK as u32)));
@@ -324,14 +327,17 @@ fn metadata_entry(
     let mut remaining = length;
     let mut position = 216;
     let mut location_data = data;
+    let descriptor = if short { 8 } else { 16 };
     while remaining != 0 {
         ensure!(
-            position + 16 <= bytes.len(),
+            position + descriptor <= bytes.len(),
             "metadata allocation descriptors exceed ICB block"
         );
         put32(&mut bytes, position, remaining.min(chunk));
         put32(&mut bytes, position + 4, location_data);
-        put16(&mut bytes, position + 8, 0);
+        if !short {
+            put16(&mut bytes, position + 8, 0);
+        }
         let amount = remaining.min(chunk);
         remaining -= amount;
         if remaining != 0 {
@@ -339,7 +345,7 @@ fn metadata_entry(
                 .checked_add(amount / BLOCK as u32 + 32)
                 .context("metadata extent location overflow")?;
         }
-        position += 16;
+        position += descriptor;
     }
     put32(&mut bytes, 212, (position - 216) as u32);
     tag(&mut bytes, 266, location, position, options.revision);
@@ -378,6 +384,10 @@ fn write_metadata_entry(
     ensure!(
         extent_blocks != 0,
         "metadata allocation chain requires fragmented storage"
+    );
+    ensure!(
+        !options.metadata_short_ad,
+        "short metadata allocation descriptors need contiguous metadata"
     );
     // The entry keeps 113 descriptors plus the AED pointer; every following
     // allocation extent keeps 125 descriptors plus its own pointer, except the

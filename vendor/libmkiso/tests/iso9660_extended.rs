@@ -1,7 +1,9 @@
 #![cfg(feature = "native-writer")]
+#[cfg(unix)]
+use libmkiso::UnixMetadataOptions;
 use libmkiso::{
     AdvancedBootOptions, BootEmulation, BootEntry, FilenamePolicy, HybridLayout, HybridOptions,
-    IsoLevel, IsoOptions, MbrBootPatch, UnixMetadataOptions, VolumeMetadata,
+    IsoLevel, IsoOptions, MbrBootPatch, VolumeMetadata,
     iso9660::{IsoReader, Limits, Namespace, ReadOptions},
     write_iso9660_with_options,
 };

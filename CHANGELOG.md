@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2.6 — 2026-11-22
+
+### Fixed
+
+- **AVCHD and Blu-ray discs play on hardware players.** A PS4 refused every AVCHD disc Kinodisc made ("this disc is not compatible") and played the same video muxed by tsMuxeR. Comparing the two showed what the native muxer (used when tsMuxeR is not installed, the usual case) got wrong, and it now writes what tsMuxeR writes. No video is encoded again: re-making a disc reuses the encoded episodes, and the disc keeps its size.
+  - **Packet arrival times**: FFmpeg's M2TS gave every packet a time that jumped back and forth (it assumed a mux rate of 1 bit/s). They now follow the stream clock (PCR), at most 48 Mbit/s apart.
+  - **Stream tables**: a Selection Information Table instead of the DVB service table, listed in the PAT; the HDMV video descriptor and the AC-3 audio descriptor in the PMT.
+  - **Clip info**: the sequence info (clock PID, start and end) was empty, and the seek map had one fixed entry whatever the clip's length; it now has every key frame. The "HDMV" stream type block is filled in.
+  - **Audio** was declared as mono with an invalid sample rate; it now says stereo or 5.1 at 48 kHz, read from the AC-3 stream itself.
+  - **Index and playlists**: the application info blocks declared a length of 0; menus are marked as interactive.
+  - **AVCHD discs (DVD media)** are written as AVCHD (version 0100, the AVCHD index extension, an `AUXDATA` folder) instead of a Blu-ray structure on a DVD, which Sony players refuse.
+  - **File system**: the decisive fix. The same files played from tsMuxeR's image and were refused from Kinodisc's (the PS4 showed "the disc cannot be played"). The UDF metadata entries now use short allocation descriptors as UDF 2.50 asks, and `.m2ts` streams are recorded as real-time files aligned to 64 KiB, like tsMuxeR writes them.
+  - **HD menus show their picture**: a static menu's picture (background, title, thumbnails, labels) was drawn as an interactive-graphics "in-effect", which players show only while the page appears: the PS4 showed a black menu with a bare highlight square. The picture is now part of the menu video, as on DVD menus, and the interactive graphics carry only the button highlights. Labels over a video background are drawn into the video too.
+  The clip info and index Kinodisc writes are now byte for byte those of the tsMuxeR disc the PS4 played (a test checks it). Discs made with earlier versions should be made again.
+- **Kinodisc reads tsMuxeR images**: the verifier stopped at their `.m2ts` ("unsupported UDF: special file type") and blocked burning them.
+- **The verifier spots these discs**: a new check, *Packet arrival times* (`BDMV-ATS`), fails when the arrival times go back, and *Selection table* (`BDMV-SIT`) warns when the PAT does not list the SIT.
+
+### Credits
+
+- The AVCHD index extension and the SIT are copied from tsMuxeR (Apache 2.0), and the other structures follow its output: see `THIRD-PARTY-NOTICES.md`. The About window says so.
+- Thanks to XfheDev, who reported the FFmpeg 8 DVD problem fixed in 1.2.4 (GitHub issue #1).
+
 ## 1.2.5 — 2026-11-22
 
 ### Added

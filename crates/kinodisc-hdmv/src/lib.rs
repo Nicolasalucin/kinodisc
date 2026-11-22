@@ -5,6 +5,7 @@
 //! the Interactive Graphics PID (`0x1400`). It also contains the BDMV patching
 //! helpers that attach a native IG menu clip to a tsMuxeR-authored disc.
 
+pub mod bdav;
 pub mod bdmv;
 pub mod compiler;
 pub mod episodes;

@@ -8,8 +8,8 @@ pub mod slideshow;
 pub mod split;
 
 use kinodisc_avchd::native::{
-    tsmuxer_is_available, NativeBdmvMuxer, NativeMenuRequest, NativeMovieRequest,
-    NativeMovieSubtitle,
+    finish_avchd_tree, tsmuxer_is_available, NativeBdmvMuxer, NativeMenuRequest,
+    NativeMovieRequest, NativeMovieSubtitle,
 };
 use kinodisc_avchd::{
     concat_mkv, write_meta, AvchdAudioConfig, AvchdEncodeRequest, AvchdEncoder, AvchdMetaRequest,
@@ -1370,8 +1370,12 @@ fn compile_hd_menu(
         image::imageops::overlay(&mut background_image, &labels, 0, 0);
     }
     let has_background = overlay_only || background_path.is_some();
-    let background =
-        Some(RgbaBitmap::new(width, height, background_image.into_raw()).map_err(menu_error)?);
+    // The picture goes into the menu video (see `MenuPicture`); a video
+    // background without labels needs no overlay.
+    let picture = (!overlay_only || background_path.is_some()).then_some(MenuPicture {
+        image: background_image,
+        overlay: overlay_only,
+    });
     let navigation = menu.navigation(None);
     let mut buttons = Vec::with_capacity(menu.buttons.len());
     for (position, button) in menu.buttons.iter().enumerate() {
@@ -1432,7 +1436,7 @@ fn compile_hd_menu(
         width,
         height,
         frame_rate_code: frame_rate_code(fps),
-        background,
+        background: None,
         buttons,
         default_selected: Some(1),
     };
@@ -1445,6 +1449,7 @@ fn compile_hd_menu(
         pes,
         m2ts,
         pes_packets,
+        picture,
     })
 }
 
@@ -2351,7 +2356,7 @@ async fn render_avchd_project(
             menu_objects: &menu_objects,
             episode_objects: &episode_objects,
         };
-        let mut compiled_menus: Vec<(MenuId, String, CompiledHdMenu)> = Vec::new();
+        let mut compiled_menus: Vec<(MenuId, String, CompiledHdMenu, Option<PathBuf>)> = Vec::new();
         let mut menu_ready = true;
         for (index, menu) in menu_list.iter().enumerate() {
             ensure_not_cancelled(&cancel)?;
@@ -2388,7 +2393,15 @@ async fn render_avchd_project(
                         ),
                     )
                     .await;
-                    compiled_menus.push((menu.id, menu.name.clone(), compiled));
+                    let picture = match &compiled.picture {
+                        Some(picture) => {
+                            let path = output_dir.join("menus").join(format!("{stem}-picture.png"));
+                            picture.image.save(&path)?;
+                            Some(path)
+                        }
+                        None => None,
+                    };
+                    compiled_menus.push((menu.id, menu.name.clone(), compiled, picture));
                 }
                 Err(error) => {
                     let message = format!(
@@ -2410,7 +2423,9 @@ async fn render_avchd_project(
 
         if menu_ready {
             let mut attached = true;
-            for (index, (menu_id, menu_name, compiled)) in compiled_menus.iter().enumerate() {
+            for (index, (menu_id, menu_name, compiled, picture)) in
+                compiled_menus.iter().enumerate()
+            {
                 let menu = project
                     .menu(*menu_id)
                     .ok_or_else(|| RenderError::Menu("menú inexistente".to_string()))?;
@@ -2419,6 +2434,9 @@ async fn render_avchd_project(
                     &project_dir,
                     menu,
                     composited_backgrounds.as_deref(),
+                    picture
+                        .as_deref()
+                        .zip(compiled.picture.as_ref().map(|picture| picture.overlay)),
                     MenuClipFormat {
                         width,
                         height,
@@ -2528,6 +2546,9 @@ async fn render_avchd_project(
             }
         }
         ensure_not_cancelled(&cancel)?;
+        if native_muxer.is_some() && !project.disc.capacity.is_blu_ray() {
+            finish_avchd_tree(&bdmv_dir).map_err(|error| RenderError::Author(error.to_string()))?;
+        }
         let iso = match BdmvIsoBuilder::default()
             .build_with_cancel(
                 &bdmv_dir,
@@ -2554,6 +2575,9 @@ async fn render_avchd_project(
         // partition as the interactive variant. Mux to a BDMV folder first and
         // wrap it with our UDF writer instead of letting tsMuxeR create the ISO.
         ensure_not_cancelled(&cancel)?;
+        if native_muxer.is_some() && !project.disc.capacity.is_blu_ray() {
+            finish_avchd_tree(&bdmv_dir).map_err(|error| RenderError::Author(error.to_string()))?;
+        }
         let iso = match BdmvIsoBuilder::default()
             .build_with_cancel(
                 &bdmv_dir,
@@ -4667,6 +4691,21 @@ struct CompiledHdMenu {
     pes: Vec<u8>,
     m2ts: Vec<u8>,
     pes_packets: Vec<Vec<u8>>,
+    /// The menu artwork for the menu video: the whole picture of a static
+    /// menu, or only the labels (transparent) over a video background.
+    picture: Option<MenuPicture>,
+}
+
+/// Artwork that goes into the menu video, not into the IG stream: Blu-ray
+/// players show IG in-effect objects only while the page appears (a PS4
+/// showed a black menu with bare button highlights), so the IG stream keeps
+/// only the button states.
+#[derive(Debug, Clone)]
+struct MenuPicture {
+    image: image::RgbaImage,
+    /// Labels over a video background (an overlay) rather than the full
+    /// picture of a static menu.
+    overlay: bool,
 }
 
 struct HdMenuContext<'a> {
@@ -4781,11 +4820,14 @@ struct MenuClipFormat {
     vbv_bufsize_kbps: u32,
 }
 
+/// `picture`: the PNG from `compile_hd_menu` and whether it is an overlay
+/// (labels over a moving background) or the whole static picture.
 fn build_menu_clip_spec(
     project: &Project,
     project_dir: &Path,
     menu: &kinodisc_domain::Menu,
     composited_backgrounds: Option<&Path>,
+    picture: Option<(&Path, bool)>,
     format: MenuClipFormat,
 ) -> MenuClipSpec {
     let video = match &menu.background {
@@ -4846,6 +4888,11 @@ fn build_menu_clip_spec(
             }
         }
     };
+    // A static menu's whole picture is the menu video.
+    let video = match picture {
+        Some((path, false)) => MenuClipVideo::Image(path.to_path_buf()),
+        _ => video,
+    };
     let audio = menu.audio.as_ref().and_then(|audio| {
         project
             .asset(audio.asset)
@@ -4882,7 +4929,20 @@ fn build_menu_clip_spec(
                 height: y1.saturating_sub(y0).max(2),
             })
         })
-        .collect();
+        .collect::<Vec<_>>();
+    // Labels over a moving background are a full-frame overlay on top.
+    let mut overlays = overlays;
+    if let Some((path, true)) = picture {
+        overlays.push(MenuClipOverlay {
+            path: path.to_path_buf(),
+            source_start_ms: 0,
+            loop_duration_ms: 1_000,
+            x: 0,
+            y: 0,
+            width: format.width,
+            height: format.height,
+        });
+    }
     let transition = menu.transition.as_ref().and_then(|transition| {
         project
             .asset(transition.asset)

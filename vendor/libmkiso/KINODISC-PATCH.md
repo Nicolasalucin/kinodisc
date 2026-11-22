@@ -51,4 +51,19 @@ Additional local hardening on top of upstream 0.1.5:
 - UDF writer nodes share paths through `Arc<str>` instead of cloning one
   `String` per node; object storage and extent vectors are pre-reserved.
 
+- Kinodisc 1.2.6 (a PS4 refused Kinodisc's BDMV/AVCHD images and played the
+  same files in tsMuxeR's image; the difference was the file system):
+  - `UdfOptions::metadata_short_ad` (default off) records the metadata,
+    mirror and bitmap files as Extended File Entries with **short**
+    allocation descriptors (UDF 2.50 2.2.13), ICB flags `0x0020`,
+    permissions 0 and link count 0, as tsMuxeR does. Off keeps the long
+    descriptors of the earlier patch above. With it on, the metadata must
+    be contiguous (no AED chain).
+  - `UdfOptions::realtime_suffixes` (default empty): files whose name ends
+    with one of the suffixes (case-insensitive) become real-time files
+    (ICB file type 249) and start on a 32-block boundary of the partition,
+    like Blu-ray/AVCHD `.m2ts` streams.
+  - The reader (`src/udf.rs`) reads file type 249 as a regular file; it
+    used to stop with "UDF special file type" on every tsMuxeR image.
+
 The rest of the crate is upstream 0.1.5 (MIT) plus these local patches.

@@ -4,11 +4,18 @@
 //! writes the movie M2TS directly with FFmpeg (copying H.264, AC-3 and PGS) and
 //! builds the BDMV navigation files with the pure builders in `kinodisc-hdmv`.
 //! Menus reuse the native IG packets but are muxed through the same FFmpeg path.
+//!
+//! FFmpeg's M2TS is then made a BDAV stream (`kinodisc_hdmv::bdav`: arrival
+//! times from the PCR, SIT, HDMV/AC-3 descriptors) and its key frames feed
+//! the clip info's EP map; [`finish_avchd_tree`] turns the navigation files
+//! into AVCHD for DVD media. Hardware players refused the 1.2.5 output.
 
 use crate::{push_file_input, run_stage, AvchdError};
+use kinodisc_hdmv::bdav::{fix_m2ts_in_place, scan_m2ts};
 use kinodisc_hdmv::native::{
-    build_clpi, build_index_bdmv, build_movie_object_with_gpr0_playmark, build_playlist_mpls,
-    parse_pmt_from_m2ts_prefix, NativeClip, NativePlaylist, NativeStream, BDAV_START_45K,
+    avchd_navigation_file, build_clpi, build_index_bdmv, build_movie_object_with_gpr0_playmark,
+    build_playlist_mpls, parse_pmt_from_m2ts_prefix, ClipTransport, NativeClip, NativePlaylist,
+    NativeStream, BDAV_START_45K,
 };
 use kinodisc_hdmv::{
     append_menu_movie_object, dummy_pgs_for_slots, inject_ig_into_menu_m2ts_file,
@@ -202,8 +209,7 @@ impl NativeBdmvMuxer {
         ]);
         run_stage(&self.ffmpeg, self.cpu, &args, "m2ts nativo", None).await?;
 
-        let source_packets = source_packet_count(&stream_path)?;
-        let streams = resolve_streams(
+        let mut streams = resolve_streams(
             &stream_path,
             request.audio_languages,
             request.subtitles,
@@ -228,6 +234,14 @@ impl NativeBdmvMuxer {
         if marks.first().copied() != Some(in_time) {
             marks.insert(0, in_time);
         }
+        let (source_packets, transport) = make_bdav_clip(
+            &stream_path,
+            &mut streams,
+            request.video_attr,
+            request.video_aspect,
+            in_time,
+            out_time,
+        )?;
         let playlist = build_playlist_mpls(&NativePlaylist {
             clip_id: 0,
             in_time,
@@ -241,6 +255,7 @@ impl NativeBdmvMuxer {
             clip_id: 0,
             source_packets,
             streams: streams.clone(),
+            transport: Some(transport),
         })
         .map_err(native_error)?;
         let index = build_index_bdmv(0, 0);
@@ -335,7 +350,7 @@ impl NativeBdmvMuxer {
                 IG_PID,
             );
             match injected {
-                Ok(source_packets) => {
+                Ok(_) => {
                     let duration = request.duration_ms.max(1);
                     let in_time = BDAV_START_45K;
                     let out_time = in_time
@@ -343,10 +358,18 @@ impl NativeBdmvMuxer {
                         .ok_or_else(|| {
                             AvchdError::InvalidConfig("duración de menú fuera de rango".into())
                         })?;
-                    let streams = resolve_menu_streams(
+                    let mut streams = resolve_menu_streams(
                         &final_path,
                         request.video_attr,
                         request.video_aspect,
+                    )?;
+                    let (source_packets, transport) = make_bdav_clip(
+                        &final_path,
+                        &mut streams,
+                        request.video_attr,
+                        request.video_aspect,
+                        in_time,
+                        out_time,
                     )?;
                     let playlist = build_playlist_mpls(&NativePlaylist {
                         clip_id: request.clip_id,
@@ -361,6 +384,7 @@ impl NativeBdmvMuxer {
                         clip_id: request.clip_id,
                         source_packets,
                         streams,
+                        transport: Some(transport),
                     })
                     .map_err(native_error)?;
                     write_file(
@@ -422,6 +446,65 @@ impl NativeBdmvMuxer {
     }
 }
 
+/// Makes FFmpeg's M2TS at `path` a BDAV stream in place (see the module
+/// notes), sets the audio attributes from its AC-3 headers and returns the
+/// packet count and the clip-info transport facts (EP map included).
+fn make_bdav_clip(
+    path: &Path,
+    streams: &mut [NativeStream],
+    video_attr: u8,
+    video_aspect: u8,
+    in_time: u32,
+    out_time: u32,
+) -> Result<(u32, ClipTransport), AvchdError> {
+    let scan = scan_m2ts(path).map_err(native_error)?;
+    for stream in streams.iter_mut() {
+        if let Some(facts) = scan.ac3_for(stream.pid) {
+            stream.audio_attr = facts.attribute();
+        }
+    }
+    fix_m2ts_in_place(path, &scan, video_attr, video_aspect).map_err(native_error)?;
+    Ok((
+        scan.packets,
+        ClipTransport::from_scan(&scan, in_time, out_time),
+    ))
+}
+
+/// Turns the BDMV navigation files under `output_dir` into AVCHD (version
+/// 0100 and the AVCHD index extension), as tsMuxeR `--avchd` writes them:
+/// the form Sony players (PS3/PS4) expect on DVD media. Call it once the
+/// tree is complete (menus attached, root menu set), before the ISO.
+pub fn finish_avchd_tree(output_dir: &Path) -> Result<(), AvchdError> {
+    let bdmv = output_dir.join("BDMV");
+    let mut files = Vec::new();
+    for base in [bdmv.clone(), bdmv.join("BACKUP")] {
+        for name in ["index.bdmv", "MovieObject.bdmv"] {
+            files.push(base.join(name));
+        }
+        for (folder, extension) in [("PLAYLIST", "mpls"), ("CLIPINF", "clpi")] {
+            let Ok(entries) = fs::read_dir(base.join(folder)) else {
+                continue;
+            };
+            for entry in entries {
+                let path = entry?.path();
+                if path
+                    .extension()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(extension))
+                {
+                    files.push(path);
+                }
+            }
+        }
+    }
+    for path in files.iter().filter(|path| path.is_file()) {
+        let bytes = fs::read(path)?;
+        let converted = avchd_navigation_file(&bytes).map_err(native_error)?;
+        fs::write(path, converted)?;
+    }
+    fs::create_dir_all(bdmv.join("AUXDATA"))?;
+    Ok(())
+}
+
 fn normalize_language(language: &str) -> String {
     kinodisc_domain::LanguageCode::from_code(language)
         .unwrap_or(kinodisc_domain::LanguageCode::Undetermined)
@@ -441,6 +524,7 @@ fn create_bdmv_dirs(bdmv: &Path) -> std::io::Result<()> {
         "BACKUP/PLAYLIST",
         "BACKUP/CLIPINF",
         "BACKUP",
+        "AUXDATA",
         "../CERTIFICATE/BACKUP",
     ] {
         fs::create_dir_all(bdmv.join(directory))?;
@@ -457,17 +541,6 @@ fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 fn write_backup(bdmv: &Path, relative: &str, bytes: &[u8]) -> std::io::Result<()> {
     write_file(&bdmv.join("BACKUP").join(relative), bytes)
-}
-
-fn source_packet_count(path: &Path) -> Result<u32, AvchdError> {
-    let length = fs::metadata(path)?.len();
-    if length == 0 || !length.is_multiple_of(192) {
-        return Err(AvchdError::InvalidConfig(
-            "el M2TS nativo no está alineado a 192 bytes".to_string(),
-        ));
-    }
-    u32::try_from(length / 192)
-        .map_err(|_| AvchdError::InvalidConfig("el M2TS nativo supera 32 bits".to_string()))
 }
 
 fn read_pmt_prefix(path: &Path) -> Result<Vec<u8>, AvchdError> {
@@ -516,6 +589,7 @@ fn resolve_streams(
             language,
             video_attr,
             video_aspect,
+            audio_attr: stream.audio_attr,
         });
     }
     Ok(streams)

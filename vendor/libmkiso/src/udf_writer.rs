@@ -105,6 +105,14 @@ pub struct UdfOptions {
     /// Re-read the finished image to return its SHA-256 digest. Disable it when
     /// the caller does not consume the digest to avoid a full extra I/O pass.
     pub compute_digest: bool,
+    /// Record the metadata, mirror and bitmap files as extended entries with
+    /// short allocation descriptors (UDF 2.50 2.2.13), as Blu-ray authoring
+    /// tools do. Off: long descriptors (the historical layout).
+    pub metadata_short_ad: bool,
+    /// Files whose name ends with one of these suffixes (ASCII, case
+    /// insensitive) are recorded as real-time files (ICB file type 249) and
+    /// start on a 32-block boundary, like Blu-ray/AVCHD `.m2ts` streams.
+    pub realtime_suffixes: Vec<String>,
 }
 impl Default for UdfOptions {
     fn default() -> Self {
@@ -127,6 +135,8 @@ impl Default for UdfOptions {
             metadata_extent_blocks: 0,
             sparing_packets: Vec::new(),
             compute_digest: true,
+            metadata_short_ad: false,
+            realtime_suffixes: Vec::new(),
         }
     }
 }
@@ -888,6 +898,8 @@ struct Node {
     allocations: Vec<Ad>,
     aeds: Vec<u32>,
     embedded: Vec<u8>,
+    /// Real-time file (ICB type 249), see `UdfOptions::realtime_suffixes`.
+    realtime: bool,
 }
 #[derive(Debug, Clone, Copy)]
 struct Ad {
@@ -906,10 +918,18 @@ impl Node {
             if self.system { 13 } else { 4 }
         } else if matches!(self.payload, Payload::Link(_)) {
             12
+        } else if self.realtime {
+            249
         } else {
             5
         }
     }
+}
+fn realtime_name(path: &str, suffixes: &[String]) -> bool {
+    let path = path.to_ascii_lowercase();
+    suffixes
+        .iter()
+        .any(|suffix| path.ends_with(&suffix.to_ascii_lowercase()))
 }
 fn node(path: Arc<str>, name: Vec<u8>, parent: usize, payload: Payload) -> Node {
     Node {
@@ -933,6 +953,7 @@ fn node(path: Arc<str>, name: Vec<u8>, parent: usize, payload: Payload) -> Node 
         allocations: Vec::new(),
         aeds: Vec::new(),
         embedded: Vec::new(),
+        realtime: false,
     }
 }
 fn build_nodes(image: &UdfImage, options: &UdfOptions) -> Result<(Vec<Node>, Option<usize>)> {
@@ -1724,6 +1745,14 @@ fn write_image(
             }
             mode => mode,
         };
+        node.realtime = !node.directory()
+            && matches!(node.payload, Payload::Pieces(_))
+            && realtime_name(&node.path, &options.realtime_suffixes);
+        if node.realtime {
+            physical_cursor = physical_cursor
+                .checked_next_multiple_of(32)
+                .context("real-time file alignment overflow")?;
+        }
         node.data = physical_cursor;
         match node.payload.clone() {
             Payload::Link(target) => {

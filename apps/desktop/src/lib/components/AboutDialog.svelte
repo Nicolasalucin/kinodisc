@@ -8,7 +8,7 @@
   let version = $state("");
 
   /** People who found bugs and suggested improvements (no @: no pings). */
-  const testers = ["OhItsStefan", "Infinite_Silver483", "Narrow-Chard4152", "Mirandopacuenca67", "Carllito7"];
+  const testers = ["OhItsStefan", "Infinite_Silver483", "Narrow-Chard4152", "Mirandopacuenca67", "Carllito7", "XfheDev"];
 
   onMount(() => {
     void getVersion()
@@ -48,6 +48,9 @@
     <h3 class="mt-5 text-[12px] font-semibold text-slate-200">{t("Licencias")}</h3>
     <p class="mt-1 text-[12px] leading-5 text-slate-400">
       {t("Kinodisc es software libre. FFmpeg y DVDAuthor se descargan aparte, verificados, con sus propias licencias (LGPL/GPL).")}
+    </p>
+    <p class="mt-2 text-[12px] leading-5 text-slate-400">
+      {t("Los discos AVCHD y Blu-ray siguen las estructuras que escribe tsMuxeR (licencia Apache 2.0).")}
     </p>
     <p class="mt-2 text-[12px] text-slate-400">github.com/Nicolasalucin/kinodisc</p>
 

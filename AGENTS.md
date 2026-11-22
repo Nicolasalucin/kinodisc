@@ -474,6 +474,52 @@ Smart Render Cache v2:
   `log_path`. `logs_open` opens the folder (through `open_folder`). Logs are
   local only, like "Copy details" (see section 19).
 
+### 22. Kinodisc 1.2.6 additions: native BDAV output
+
+- **Reference**: the native muxer must write what tsMuxeR 2.7.0 writes (a PS4
+  played tsMuxeR's AVCHD and refused Kinodisc 1.2.5's). The fixtures
+  `crates/kinodisc-hdmv/tests/fixtures/tsmuxer-avchd-*` are tsMuxeR files;
+  `clip_info_is_byte_for_byte_the_one_a_ps4_plays` and
+  `avchd_index_and_navigation_files_match_tsmuxer` must stay byte-exact.
+  Attribution: `THIRD-PARTY-NOTICES.md` and `LICENSES/Apache-2.0-tsMuxer.txt`.
+- **`kinodisc-hdmv::bdav`**: every FFmpeg M2TS goes through `scan_m2ts`
+  (PAT/PMT, AC-3 headers, key frames by `random_access_indicator`, else SPS/IDR)
+  and `fix_m2ts_in_place` (same size, 1 MiB blocks, a second file handle reads
+  the PCR ahead). ATS = PCR line, never closer than `MIN_ATS_GAP` (48 Mbit/s);
+  PAT gets program 0 → SIT (0x1F); SDT packets (0x11) become the SIT; PMT
+  gets `05 08 HDMV ff 1b <attr> <aspect>f` and `05 04 AC-3` + A/52 descriptor.
+  Run it after any packet-level change (IG injection) and before building the
+  clip info: the EP map points at packet numbers.
+- **Clip info** (`build_clpi` with `ClipTransport`): ClipInfo with the "HDMV"
+  TS type block, SequenceInfo (PCR PID, IN/OUT), ProgramInfo, CPI with the EP
+  map (coarse every 2^19 PTS ticks or 2^17 packets, one fine entry per key
+  frame), empty ClipMark and extension data, 4-byte aligned.
+  `NativeStream::audio_attr` comes from the AC-3 header (0x31 stereo, 0x61 5.1).
+- **Index / playlist**: AppInfoBDMV length 34, AppInfoPlayList length 14
+  (sequential, audio_mix_app_flag), First Playback and Top Menu interactive.
+- **AVCHD on DVD media** (`!capacity.is_blu_ray()`): after the tree is complete,
+  `kinodisc_avchd::native::finish_avchd_tree` sets version 0100 on index,
+  MovieObject, MPLS and CLPI (BDMV and BACKUP), appends the IDEX extension
+  (`AVCHD_INDEX_EXTENSION`) and creates `AUXDATA`. Blu-ray keeps 0200.
+- **Verifier**: `BDMV-ATS` (Fail when arrival times go back, modulo the 2^30
+  wrap) and `BDMV-SIT` (Warn when the PAT has no program 0 → 0x1F), on the
+  first 512 packets of each stream.
+- **UDF for BDMV/AVCHD** (`BdmvIsoBuilder`): `metadata_short_ad: true` and
+  `realtime_suffixes: [".m2ts", ".ssif"]` (see `vendor/libmkiso/KINODISC-PATCH.md`).
+  This was what finally made the PS4 open Kinodisc discs: keep both, and keep
+  `builds_a_readable_udf_250_bdmv_image` checking them. The data-disc builder
+  (`build_data_iso`, UDF 1.02) does not use them.
+- **HD menu artwork lives in the menu video**, never in IG in-effects
+  (`page.in_objects`): players show in-effects only while the page appears.
+  `compile_hd_menu` returns a `MenuPicture` (the flattened static picture, or
+  the labels for video/motion backgrounds); the render saves it as
+  `menus/NN-<id>-picture.png` and `build_menu_clip_spec` encodes it as the
+  menu video (static) or a full-frame overlay (moving backgrounds). The IG
+  stream holds only button states (normal transparent, selected white 30 %,
+  activated cyan 44 %).
+- Developer tool: `cargo run -p kinodisc-iso --example bdmv_iso -- <folder>
+  <out.iso> <label>` wraps a BDMV folder with the same UDF writer.
+
 ### 13. Localization
 
 - Spanish is the source language; English must stay complete. Run

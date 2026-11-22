@@ -371,6 +371,11 @@ impl BdmvIsoBuilder {
                 allocation: libmkiso::AllocationMode::Long,
                 label,
                 compute_digest: false,
+                // As tsMuxeR records BDMV/AVCHD (a PS4 refused the 1.2.5
+                // layout): short_ad metadata entries, real-time .m2ts files
+                // on 32-block boundaries.
+                metadata_short_ad: true,
+                realtime_suffixes: vec![".m2ts".to_string(), ".ssif".to_string()],
                 ..libmkiso::UdfOptions::default()
             };
             let checkpoint = {
@@ -681,17 +686,41 @@ mod tests {
         // and metadata mirror (type 251) must both be present.
         let mut metadata_entry = false;
         let mut mirror_entry = false;
+        let mut realtime_streams = 0;
         for block in image.as_chunks::<2_048>().0.iter().take(600) {
             if block.len() >= 28 && u16::from_le_bytes([block[0], block[1]]) == 266 {
+                let ad_type = u16::from_le_bytes([block[34], block[35]]) & 7;
                 match block[27] {
-                    250 => metadata_entry = true,
-                    251 => mirror_entry = true,
+                    // UDF 2.50 2.2.13 / tsMuxeR: short_ad metadata entries.
+                    // A PS4 could not read the long_ad layout of 1.2.5.
+                    250 => metadata_entry = ad_type == 0,
+                    251 => mirror_entry = ad_type == 0,
+                    // .m2ts streams are real-time files on a 32-block boundary.
+                    249 => {
+                        let ea = u32::from_le_bytes(block[208..212].try_into().unwrap()) as usize;
+                        let ad = 216 + ea;
+                        let lbn = u32::from_le_bytes(block[ad + 4..ad + 8].try_into().unwrap());
+                        assert_eq!(
+                            lbn % 32,
+                            0,
+                            "el .m2ts no empieza en un límite de 32 bloques"
+                        );
+                        realtime_streams += 1;
+                    }
                     _ => {}
                 }
             }
         }
-        assert!(metadata_entry, "falta el Metadata File Entry");
-        assert!(mirror_entry, "falta el Metadata Mirror File Entry");
+        assert!(metadata_entry, "falta el Metadata File Entry con short_ad");
+        assert!(
+            mirror_entry,
+            "falta el Metadata Mirror File Entry con short_ad"
+        );
+        // One entry in the metadata file and its copy in the mirror.
+        assert_eq!(
+            realtime_streams, 2,
+            "el .m2ts tiene que ser un archivo de tiempo real (249)"
+        );
 
         let reader =
             libmkiso::UdfReader::open(&image, libmkiso::UdfLimits::default()).expect("leer UDF");

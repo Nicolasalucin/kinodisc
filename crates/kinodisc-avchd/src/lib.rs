@@ -20,7 +20,9 @@ pub mod native;
 
 pub const CRATE_NAME: &str = "kinodisc-avchd";
 
-pub const AVCHD_MAX_VIDEO_KBPS: u32 = 24_000;
+/// AVCHD on DVD media allows 18 Mb/s of video (24 Mb/s is the memory-card
+/// figure); Blu-ray media keep `BLURAY_MAX_VIDEO_KBPS`.
+pub const AVCHD_MAX_VIDEO_KBPS: u32 = 18_000;
 pub const BLURAY_MAX_VIDEO_KBPS: u32 = 38_000;
 pub const BLURAY_VBV_MIN_KBITS: u32 = 30_000;
 pub const BLURAY_VBV_MAX_KBITS: u32 = 40_000;
@@ -201,6 +203,41 @@ pub struct AvchdEncodeRequest {
     pub x264_preset: &'static str,
     /// Copy the compliant source video stream instead of re-encoding it.
     pub video_copy: bool,
+    /// x264 two-pass statistics file (job-scoped). `Some` encodes the CPU
+    /// path in two passes; hardware encoders and stream copy stay single.
+    pub passlog: Option<PathBuf>,
+    /// The source is progressive (or film-based): on 480i/576i the frames
+    /// are coded progressive and flagged interlaced (PsF), like 1080p25/30,
+    /// instead of MBAFF, which costs bits and ignores `fake-interlaced`.
+    pub progressive_source: bool,
+    /// Encoder tuning for the kind of picture.
+    pub content: kinodisc_toolchain::ContentType,
+}
+
+/// Which pass of a two-pass encode, or a single pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncodePass {
+    Single,
+    /// Analysis only: video statistics, no output file.
+    First,
+    Second,
+}
+
+/// One-second GOP (Blu-ray/AVCHD maximum): 24 at 23.976, 30 at 29.97.
+pub fn gop_frames(config: &AvchdVideoConfig) -> u32 {
+    let seconds = u32::from(config.gop_seconds.clamp(1, 3));
+    (config.frame_rate.as_f64().round() as u32 * seconds).max(1)
+}
+
+/// Whether `request` codes interlaced fields (MBAFF) rather than
+/// progressive frames flagged as interlaced.
+pub fn codes_interlaced(request: &AvchdEncodeRequest) -> bool {
+    request.config.resolution.interlaced() && !request.progressive_source
+}
+
+/// Whether the CPU path encodes `request` in two passes.
+pub fn two_pass(request: &AvchdEncodeRequest) -> bool {
+    request.passlog.is_some() && !request.video_copy && request.hardware_encoder.is_none()
 }
 
 impl AvchdEncodeRequest {
@@ -376,8 +413,29 @@ impl AvchdEncoder {
         request.validate()?;
         std::fs::create_dir_all(&request.output_dir)?;
 
-        let args = build_encode_args(request);
-        run_stage(&self.ffmpeg, self.cpu, &args, "avchd", progress.as_ref()).await?;
+        if two_pass(request) {
+            let first = build_encode_args_for(request, EncodePass::First);
+            run_stage(
+                &self.ffmpeg,
+                self.cpu,
+                &first,
+                "avchd-pass1",
+                progress.as_ref(),
+            )
+            .await?;
+            let second = build_encode_args_for(request, EncodePass::Second);
+            run_stage(
+                &self.ffmpeg,
+                self.cpu,
+                &second,
+                "avchd-pass2",
+                progress.as_ref(),
+            )
+            .await?;
+        } else {
+            let args = build_encode_args(request);
+            run_stage(&self.ffmpeg, self.cpu, &args, "avchd", progress.as_ref()).await?;
+        }
 
         Ok(AvchdOutputs {
             stream_mkv: request.stream_mkv(),
@@ -425,6 +483,12 @@ fn audio_filter_chain(audio: &AvchdAudioConfig) -> Option<String> {
 }
 
 pub fn build_encode_args(request: &AvchdEncodeRequest) -> Vec<String> {
+    build_encode_args_for(request, EncodePass::Single)
+}
+
+/// FFmpeg arguments for one pass. The first pass keeps only the video and
+/// writes nothing but the x264 statistics.
+pub fn build_encode_args_for(request: &AvchdEncodeRequest, pass: EncodePass) -> Vec<String> {
     let mut args = vec!["-hide_banner".to_string(), "-y".to_string()];
     if request.trim_start_ms.is_some() || request.trim_end_ms.is_some() {
         if let Some(start) = request.trim_start_ms {
@@ -490,11 +554,16 @@ pub fn build_encode_args(request: &AvchdEncodeRequest) -> Vec<String> {
         args.extend(["-c:v".to_string(), "copy".to_string()]);
     } else {
         let spec = ResolutionSpec::from_config(&request.config);
-        let mut filter = match &request.pre_filter {
-            Some(pre) => format!("{pre},{}", build_filter(request, spec)),
-            None => build_filter(request, spec),
-        };
-        let keyint = request.config.keyint_frames.max(1);
+        let mut chain = Vec::new();
+        if let Some(pre) = &request.pre_filter {
+            chain.push(pre.clone());
+        }
+        chain.push(build_filter(request, spec));
+        let mut filter = chain.join(",");
+        let keyint = gop_frames(&request.config);
+        let interlaced = codes_interlaced(request);
+        // Progressive frames on an interlaced format, flagged with pic_struct.
+        let psf = spec.psf || (spec.interlaced && !interlaced);
         let maxrate = request.maxrate_kbps.max(request.video_kbps);
         let bufsize = request.vbv_bufsize_kbps.max(1);
         // Hardware encoders cannot emit interlaced or PsF (fake-interlaced)
@@ -502,11 +571,12 @@ pub fn build_encode_args(request: &AvchdEncodeRequest) -> Vec<String> {
         let hardware = request
             .hardware_encoder
             .filter(|_| !spec.psf && !spec.interlaced);
+        let (colour, colour_trc) = sd_colour(request.config.resolution);
         let level = x264_level(&request.config);
         let codec = hardware
             .map(kinodisc_toolchain::HardwareEncoder::ffmpeg_name)
             .unwrap_or("libx264");
-        if spec.interlaced {
+        if interlaced {
             // Field order for the encoder; `-top` is gone in FFmpeg 9.
             filter.push_str(",setfield=tff");
         }
@@ -541,16 +611,39 @@ pub fn build_encode_args(request: &AvchdEncodeRequest) -> Vec<String> {
                 "-g".to_string(),
                 keyint.to_string(),
                 "-bf".to_string(),
-                "0".to_string(),
+                if hardware == kinodisc_toolchain::HardwareEncoder::VaapiH264 {
+                    "0".to_string()
+                } else {
+                    "3".to_string()
+                },
             ]);
         } else {
+            // bluray-compat caps B-frames at 3 (strict pyramid), refs at 6
+            // and weighted P at 1; level 4.1 holds 4 reference frames at
+            // 1080 lines.
             let mut x264 = format!(
-                "bluray-compat=1:open-gop=0:slices=4:nal-hrd=vbr:vbv-maxrate={maxrate}:vbv-bufsize={bufsize}:aud=1:colorprim=bt709:transfer=bt709:colormatrix=bt709:keyint={keyint}:min-keyint={keyint}:scenecut=0"
+                "bluray-compat=1:open-gop=0:slices=4:nal-hrd=vbr:vbv-maxrate={maxrate}:vbv-bufsize={bufsize}:aud=1:colorprim={colour}:transfer={colour}:colormatrix={colour}:keyint={keyint}:min-keyint={keyint}:scenecut=0:b-pyramid=strict"
             );
-            if spec.interlaced {
+            if spec.height >= 1080 {
+                x264.push_str(":ref=4");
+            }
+            if interlaced {
                 x264.push_str(":tff=1");
-            } else if spec.psf {
+            } else if psf {
                 x264.push_str(":fake-interlaced=1:pic-struct=1");
+            }
+            if pass != EncodePass::Single {
+                if let Some(passlog) = &request.passlog {
+                    args.extend([
+                        "-pass".to_string(),
+                        if pass == EncodePass::First { "1" } else { "2" }.to_string(),
+                        "-passlogfile".to_string(),
+                        passlog.display().to_string(),
+                    ]);
+                }
+            }
+            if let Some(tune) = request.content.x264_tune() {
+                args.extend(["-tune".to_string(), tune.to_string()]);
             }
             args.extend([
                 "-preset".to_string(),
@@ -570,21 +663,38 @@ pub fn build_encode_args(request: &AvchdEncodeRequest) -> Vec<String> {
                 "-g".to_string(),
                 keyint.to_string(),
                 "-bf".to_string(),
-                "0".to_string(),
+                "3".to_string(),
                 "-x264-params".to_string(),
                 x264,
             ]);
         }
         args.extend([
             "-color_primaries".to_string(),
-            "bt709".to_string(),
+            colour.to_string(),
             "-color_trc".to_string(),
-            "bt709".to_string(),
+            colour_trc.to_string(),
             "-colorspace".to_string(),
-            "bt709".to_string(),
+            colour.to_string(),
         ]);
-        if spec.interlaced {
+        if interlaced {
             args.extend(["-flags".to_string(), "+ildct+ilme".to_string()]);
+        }
+        if pass == EncodePass::First {
+            // Statistics only: no audio, subtitles or file.
+            args.extend([
+                "-map".to_string(),
+                "0:v:0".to_string(),
+                "-an".to_string(),
+                "-sn".to_string(),
+                "-dn".to_string(),
+                "-progress".to_string(),
+                "pipe:1".to_string(),
+                "-nostats".to_string(),
+                "-f".to_string(),
+                "null".to_string(),
+                if cfg!(windows) { "NUL" } else { "/dev/null" }.to_string(),
+            ]);
+            return args;
         }
     }
     args.extend(["-map".to_string(), "0:v:0".to_string()]);
@@ -691,6 +801,17 @@ pub fn build_encode_args(request: &AvchdEncodeRequest) -> Vec<String> {
 
 pub const AVCHD_DEFAULT_AUDIO_KBPS: u16 = 192;
 
+/// Colour description: BT.601 for SD (525 lines SMPTE 170M, 625 lines
+/// BT.470BG), BT.709 for HD. Returns the x264/`-colorspace` name and the
+/// FFmpeg `-color_trc` name.
+fn sd_colour(resolution: AvchdResolution) -> (&'static str, &'static str) {
+    match resolution {
+        AvchdResolution::Sd480i => ("smpte170m", "smpte170m"),
+        AvchdResolution::Sd576i => ("bt470bg", "gamma28"),
+        _ => ("bt709", "bt709"),
+    }
+}
+
 /// The scale chain for an episode. Fitting (letterbox, crop) happens on the
 /// display canvas (854x480 for 16:9 480i, 1024x576 for 16:9 576i; the frame
 /// itself for HD), then the picture is squeezed to the stored frame and
@@ -699,7 +820,11 @@ pub const AVCHD_DEFAULT_AUDIO_KBPS: u16 = 192;
 /// and was stretched by 32/27) and wrote `setsar=32:27`, which FFmpeg reads
 /// as `sar=32` with `max=27`, so the stream said 27:1.
 pub fn build_filter(request: &AvchdEncodeRequest, spec: ResolutionSpec) -> String {
-    let interlaced = if spec.interlaced { ":interl=1" } else { "" };
+    let interlaced = if codes_interlaced(request) {
+        ":interl=1"
+    } else {
+        ""
+    };
     let sar = sar_for(request.config.resolution, request.aspect);
     let (display_width, display_height) =
         display_canvas(request.config.resolution, request.aspect, spec);
@@ -1251,11 +1376,16 @@ mod tests {
     fn standard_low_ac3_bitrates_are_accepted() {
         for kbps in [64, 96, 128, 160, 192, 448] {
             let mut req = request();
+            // AVCHD on DVD media: 18 Mb/s at most (1.3).
+            req.maxrate_kbps = AVCHD_MAX_VIDEO_KBPS;
+            req.vbv_bufsize_kbps = AVCHD_MAX_VIDEO_KBPS;
             req.audios[0].bitrate_kbps = kbps;
             req.audios[0].channels = 2;
             assert!(req.validate().is_ok(), "{kbps} kbps");
         }
         let mut req = request();
+        req.maxrate_kbps = AVCHD_MAX_VIDEO_KBPS;
+        req.vbv_bufsize_kbps = AVCHD_MAX_VIDEO_KBPS;
         req.audios[0].bitrate_kbps = 100;
         assert!(req.validate().is_err());
         req.audios[0].bitrate_kbps = 96;
@@ -1301,6 +1431,9 @@ mod tests {
             hardware_encoder: None,
             x264_preset: "medium",
             video_copy: false,
+            passlog: None,
+            progressive_source: false,
+            content: kinodisc_toolchain::ContentType::Film,
         }
     }
 
@@ -1315,11 +1448,116 @@ mod tests {
         assert!(args.contains("vbv-bufsize=24000"));
         assert!(args.contains("aud=1"));
         assert!(args.contains("colorprim=bt709"));
-        assert!(args.contains("-bf 0"));
+        // B-frames are safe on hardware players (a PS4 plays them); the
+        // pyramid is the strict one Blu-ray allows.
+        assert!(args.contains("-bf 3"));
+        assert!(args.contains("b-pyramid=strict"));
         assert!(args.contains("-profile:v high"));
         assert!(args.contains("-level:v 4.1"));
         assert!(args.contains("-f matroska"));
         assert!(args.contains("-c:a:0 ac3"));
+        // One-second GOP at 23.976.
+        assert!(args.contains("keyint=24:min-keyint=24"));
+        // Film keeps the x264 defaults (aq-mode=3 measured worse).
+        assert!(!args.contains("aq-mode"));
+        assert!(!args.contains("-tune"));
+    }
+
+    #[test]
+    fn two_passes_analyse_the_video_then_write_the_disc_stream() {
+        let mut request = request();
+        assert!(!two_pass(&request), "no stats file: single pass");
+        request.passlog = Some(PathBuf::from("/tmp/episode-01-x264"));
+        assert!(two_pass(&request));
+        let first = build_encode_args_for(&request, EncodePass::First).join(" ");
+        assert!(
+            first.contains("-pass 1 -passlogfile /tmp/episode-01-x264"),
+            "{first}"
+        );
+        assert!(first.contains("-map 0:v:0 -an -sn -dn"), "{first}");
+        assert!(first.contains("-f null"), "{first}");
+        assert!(!first.contains("-c:a"), "{first}");
+        assert!(!first.contains("matroska"), "{first}");
+        let second = build_encode_args_for(&request, EncodePass::Second).join(" ");
+        assert!(
+            second.contains("-pass 2 -passlogfile /tmp/episode-01-x264"),
+            "{second}"
+        );
+        assert!(second.contains("-c:a:0 ac3"), "{second}");
+        assert!(second.contains("-f matroska"), "{second}");
+        // Hardware encoders and stream copy stay single-pass.
+        request.hardware_encoder = Some(kinodisc_toolchain::HardwareEncoder::NvencH264);
+        assert!(!two_pass(&request));
+        request.hardware_encoder = None;
+        request.video_copy = true;
+        assert!(!two_pass(&request));
+    }
+
+    #[test]
+    fn progressive_sources_on_480i_are_coded_progressive_and_flagged_interlaced() {
+        let mut request = request();
+        request.config.resolution = AvchdResolution::Sd480i;
+        request.config.frame_rate = FrameRate::FPS_29_97;
+        request.progressive_source = true;
+        let args = build_encode_args(&request).join(" ");
+        // MBAFF (tff/+ildct) would ignore fake-interlaced and cost bits.
+        assert!(args.contains("fake-interlaced=1:pic-struct=1"), "{args}");
+        assert!(!args.contains("tff=1"), "{args}");
+        assert!(!args.contains("+ildct"), "{args}");
+        assert!(!args.contains("setfield=tff"), "{args}");
+        assert!(!args.contains("interl=1"), "{args}");
+        assert!(args.contains("keyint=30:min-keyint=30"), "{args}");
+        // SD is BT.601.
+        assert!(args.contains("colorprim=smpte170m"), "{args}");
+        assert!(args.contains("-color_trc smpte170m"), "{args}");
+        // A truly interlaced source keeps MBAFF.
+        request.progressive_source = false;
+        let args = build_encode_args(&request).join(" ");
+        assert!(
+            args.contains("tff=1") && args.contains("+ildct+ilme"),
+            "{args}"
+        );
+        request.config.resolution = AvchdResolution::Sd576i;
+        request.config.frame_rate = FrameRate::PAL;
+        let args = build_encode_args(&request).join(" ");
+        assert!(args.contains("colorprim=bt470bg"), "{args}");
+        assert!(args.contains("-color_trc gamma28"), "{args}");
+    }
+
+    #[test]
+    fn content_type_tunes_x264_without_denoising() {
+        let mut request = request();
+        request.content = kinodisc_toolchain::ContentType::Animation;
+        let args = build_encode_args(&request).join(" ");
+        assert!(args.contains("-tune animation"), "{args}");
+        // The denoise measured worse (1.3), so the picture is left alone.
+        assert!(!args.contains("hqdn3d"), "{args}");
+        request.content = kinodisc_toolchain::ContentType::Grain;
+        let args = build_encode_args(&request).join(" ");
+        assert!(args.contains("-tune grain"), "{args}");
+        assert!(!args.contains("hqdn3d"), "{args}");
+    }
+
+    #[test]
+    fn longer_gops_put_a_key_frame_every_two_or_three_seconds() {
+        let mut request = request();
+        request.config.gop_seconds = 2;
+        let args = build_encode_args(&request).join(" ");
+        assert!(args.contains("keyint=48:min-keyint=48"), "{args}");
+        request.config.gop_seconds = 3;
+        let args = build_encode_args(&request).join(" ");
+        assert!(args.contains("keyint=72:min-keyint=72"), "{args}");
+    }
+
+    #[test]
+    fn full_hd_keeps_the_level_41_reference_limit() {
+        let mut request = request();
+        request.config.resolution = AvchdResolution::R1080p;
+        let args = build_encode_args(&request).join(" ");
+        assert!(args.contains(":ref=4"), "{args}");
+        request.config.resolution = AvchdResolution::R720p;
+        let args = build_encode_args(&request).join(" ");
+        assert!(!args.contains(":ref=4"), "{args}");
     }
 
     #[test]
@@ -1359,6 +1597,7 @@ mod tests {
         assert!(args.contains("-maxrate 24000k"));
         assert!(args.contains("-bufsize 24000k"));
         assert!(args.contains("-g 24"));
+        assert!(args.contains("-bf 3"));
     }
 
     #[test]

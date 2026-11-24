@@ -16,12 +16,13 @@ use kinodisc_domain::{
 use kinodisc_toolchain::{resolve_binary, CpuUsage, MEDIA_PROTOCOL_WHITELIST};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdout, Command};
 use tokio::sync::mpsc;
-use tokio::time::timeout;
 
 pub const CRATE_NAME: &str = "kinodisc-dvd";
 
@@ -33,6 +34,14 @@ pub const HALF_D1_AFTER_MS: u64 = 9_000_000;
 /// A single FFmpeg stage may legitimately run for hours on slow hardware, but
 /// an unresponsive process must not block a render forever.
 pub const DVD_STAGE_TIMEOUT: Duration = Duration::from_secs(12 * 60 * 60);
+/// A motion menu writes a frame many times a second; this long without a
+/// new frame or byte means FFmpeg hung. FFmpeg keeps printing its progress
+/// lines while it is stuck, so the watchdog follows the values, not the
+/// lines (1.3 QA).
+pub const MOTION_MENU_STALL: Duration = Duration::from_secs(75);
+/// Tries of a motion menu before the render fails: a hang is not
+/// deterministic.
+const MOTION_MENU_TRIES: u32 = 4;
 
 #[derive(Debug, Clone)]
 pub struct VideoEncodeConfig {
@@ -270,6 +279,8 @@ pub enum EncodeError {
     },
     #[error("FFmpeg excedió el tiempo máximo en {0}")]
     Timeout(&'static str),
+    #[error("FFmpeg dejó de avanzar en {0}")]
+    Stalled(&'static str),
 }
 
 #[derive(Debug, Clone)]
@@ -392,17 +403,51 @@ impl DvdEncoder {
         if let Some(parent) = request.output_mpg.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let args = build_motion_menu_args(request);
-        run_stage(
-            &self.ffmpeg,
-            self.cpu,
-            &args,
-            "motion-menu",
-            progress.as_ref(),
-        )
-        .await?;
+        let first_args = build_motion_menu_args(request);
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            // Retries run the filter graph on one thread: the hang is a race
+            // at the end of the graph (same byte every time, not every time).
+            let args = if attempt == 1 {
+                first_args.clone()
+            } else {
+                single_threaded_filters(&first_args)
+            };
+            match run_stage_watched(
+                &self.ffmpeg,
+                self.cpu,
+                &args,
+                "motion-menu",
+                progress.as_ref(),
+                Some(MOTION_MENU_STALL),
+            )
+            .await
+            {
+                // A hang is not deterministic: the same menu rendered on the
+                // next try in 1.3 QA.
+                Err(EncodeError::Stalled(_)) if attempt < MOTION_MENU_TRIES => continue,
+                result => result?,
+            }
+            break;
+        }
         Ok(request.output_mpg.clone())
     }
+}
+
+/// `args` with the filter graph on one thread (output bytes do not change:
+/// the encoder's own threads stay as they are).
+fn single_threaded_filters(args: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len() + 2);
+    let mut added = false;
+    for arg in args {
+        if !added && arg == "-filter_complex" {
+            out.extend(["-filter_complex_threads".to_string(), "1".to_string()]);
+            added = true;
+        }
+        out.push(arg.clone());
+    }
+    out
 }
 
 async fn run_stage(
@@ -411,6 +456,19 @@ async fn run_stage(
     args: &[String],
     stage: &'static str,
     progress: Option<&EncodeProgressSink>,
+) -> Result<(), EncodeError> {
+    run_stage_watched(ffmpeg, cpu, args, stage, progress, None).await
+}
+
+/// `run_stage` that kills FFmpeg when its `-progress` values (frame, time,
+/// size) stop changing for `stall`.
+async fn run_stage_watched(
+    ffmpeg: &Path,
+    cpu: CpuUsage,
+    args: &[String],
+    stage: &'static str,
+    progress: Option<&EncodeProgressSink>,
+    stall: Option<Duration>,
 ) -> Result<(), EncodeError> {
     let args = kinodisc_toolchain::dc_precision_for_ffmpeg(
         &kinodisc_toolchain::with_thread_limit(args, cpu.encoder_threads()),
@@ -430,40 +488,44 @@ async fn run_stage(
         .stderr
         .take()
         .ok_or_else(|| EncodeError::InvalidConfig("no se pudo capturar stderr".to_string()))?;
-    let (progress_task, drain_task) = if let Some(sink) = progress {
-        let sink = sink.clone();
-        (
-            Some(tokio::spawn(read_encode_progress(stdout, stage, sink))),
-            None,
-        )
-    } else {
-        (None, Some(tokio::spawn(drain_stdout(stdout))))
-    };
+    let started = Instant::now();
+    let activity = Arc::new(AtomicU64::new(0));
+    let progress_task = tokio::spawn(read_encode_progress(
+        stdout,
+        stage,
+        progress.cloned(),
+        Arc::clone(&activity),
+        started,
+    ));
     let stderr_task = tokio::spawn(read_stderr(stderr));
-    let status = match timeout(DVD_STAGE_TIMEOUT, child.wait()).await {
-        Ok(status) => status?,
-        Err(_) => {
+    let failure = loop {
+        tokio::select! {
+            status = child.wait() => break Ok(status?),
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                let elapsed = started.elapsed();
+                if elapsed > DVD_STAGE_TIMEOUT {
+                    break Err(EncodeError::Timeout(stage));
+                }
+                let quiet = elapsed
+                    .saturating_sub(Duration::from_millis(activity.load(Ordering::Relaxed)));
+                if stall.is_some_and(|stall| quiet > stall) {
+                    break Err(EncodeError::Stalled(stage));
+                }
+            }
+        }
+    };
+    let status = match failure {
+        Ok(status) => status,
+        Err(error) => {
             let _ = child.kill().await;
-            if let Some(task) = &progress_task {
-                task.abort();
-            }
-            if let Some(task) = &drain_task {
-                task.abort();
-            }
+            progress_task.abort();
             stderr_task.abort();
-            return Err(EncodeError::Timeout(stage));
+            return Err(error);
         }
     };
     let mut task_errors = Vec::new();
-    if let Some(task) = progress_task {
-        if let Err(error) = task.await {
-            task_errors.push(format!("tarea de progreso: {error}"));
-        }
-    }
-    if let Some(task) = drain_task {
-        if let Err(error) = task.await {
-            task_errors.push(format!("tarea de drenaje de stdout: {error}"));
-        }
+    if let Err(error) = progress_task.await {
+        task_errors.push(format!("tarea de progreso: {error}"));
     }
     let stderr_log = match stderr_task.await {
         Ok(log) => log,
@@ -490,12 +552,42 @@ async fn run_stage(
     }
 }
 
-async fn read_encode_progress(stdout: ChildStdout, stage: &'static str, sink: EncodeProgressSink) {
+/// True when a `-progress` line shows the encode moved: a new frame count,
+/// output time or output size. `progress=` and speed lines repeat while
+/// FFmpeg is stuck.
+fn progress_advanced(line: &str, last: &mut [String; 3]) -> bool {
+    let slot = if let Some(value) = line.strip_prefix("frame=") {
+        Some((0, value))
+    } else if let Some(value) = line.strip_prefix("out_time_us=") {
+        Some((1, value))
+    } else {
+        line.strip_prefix("total_size=").map(|value| (2, value))
+    };
+    match slot {
+        Some((index, value)) if last[index] != value.trim() => {
+            last[index] = value.trim().to_string();
+            true
+        }
+        _ => false,
+    }
+}
+
+async fn read_encode_progress(
+    stdout: ChildStdout,
+    stage: &'static str,
+    sink: Option<EncodeProgressSink>,
+    activity: Arc<AtomicU64>,
+    started: Instant,
+) {
     let mut lines = BufReader::new(stdout).lines();
     let mut out_time_us = 0u64;
     let mut speed_x = None;
     let mut fps = None;
+    let mut last: [String; 3] = Default::default();
     while let Ok(Some(line)) = lines.next_line().await {
+        if progress_advanced(&line, &mut last) {
+            activity.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+        }
         if let Some(value) = line.strip_prefix("out_time_us=") {
             out_time_us = value.trim().parse().unwrap_or(out_time_us);
         } else if let Some(value) = line.strip_prefix("speed=") {
@@ -504,23 +596,16 @@ async fn read_encode_progress(stdout: ChildStdout, stage: &'static str, sink: En
         } else if let Some(value) = line.strip_prefix("fps=") {
             fps = value.trim().parse::<f32>().ok();
         } else if line.starts_with("progress=") {
-            let _ = sink
-                .send(EncodeProgress {
-                    stage,
-                    out_time_us,
-                    speed_x,
-                    fps,
-                })
-                .await;
-        }
-    }
-}
-
-async fn drain_stdout(mut stdout: ChildStdout) {
-    let mut buffer = [0u8; 4096];
-    while let Ok(read) = stdout.read(&mut buffer).await {
-        if read == 0 {
-            break;
+            if let Some(sink) = &sink {
+                let _ = sink
+                    .send(EncodeProgress {
+                        stage,
+                        out_time_us,
+                        speed_x,
+                        fps,
+                    })
+                    .await;
+            }
         }
     }
 }
@@ -874,6 +959,10 @@ pub fn build_motion_menu_args(request: &MotionMenuEncodeRequest) -> Vec<String> 
         .max(0.0);
     let background_secs = (request.duration_ms as f64 / 1000.0 - transition_secs).max(0.1);
     let transition_index = audio_index + 1;
+    // Every looped input ends a second after the menu: the hangs of 1.3 QA
+    // were all in the last frames, where FFmpeg had to stop endless inputs.
+    let input_secs = format!("{:.3}", request.duration_ms as f64 / 1000.0 + 1.0);
+    let limit = |args: &mut Vec<String>| args.extend(["-t".to_string(), input_secs.clone()]);
 
     let mut args = vec!["-hide_banner".to_string(), "-y".to_string()];
     if request.background_is_video {
@@ -886,9 +975,18 @@ pub fn build_motion_menu_args(request: &MotionMenuEncodeRequest) -> Vec<String> 
             fps.clone(),
         ]);
     }
+    limit(&mut args);
     push_file_input(&mut args, &request.background);
+    // Each card reads only its own seconds (input seek + duration): a
+    // looped whole episode was decoded endlessly to keep 10 s and stalled
+    // the menu (1.3 QA). The `loop` filter repeats them.
     for button in &request.buttons {
-        args.extend(["-stream_loop".to_string(), "-1".to_string()]);
+        args.extend([
+            "-ss".to_string(),
+            format!("{:.3}", button.source_start_ms as f64 / 1000.0),
+            "-t".to_string(),
+            format!("{:.3}", button.loop_duration_ms as f64 / 1000.0),
+        ]);
         push_file_input(&mut args, &button.input);
     }
     args.extend([
@@ -897,6 +995,7 @@ pub fn build_motion_menu_args(request: &MotionMenuEncodeRequest) -> Vec<String> 
         "-framerate".to_string(),
         fps.clone(),
     ]);
+    limit(&mut args);
     push_file_input(&mut args, &request.labels_overlay);
     for button in request
         .buttons
@@ -909,6 +1008,7 @@ pub fn build_motion_menu_args(request: &MotionMenuEncodeRequest) -> Vec<String> 
             "-framerate".to_string(),
             fps.clone(),
         ]);
+        limit(&mut args);
         push_file_input(
             &mut args,
             button.mask_png.as_ref().expect("mask filtered above"),
@@ -917,6 +1017,7 @@ pub fn build_motion_menu_args(request: &MotionMenuEncodeRequest) -> Vec<String> 
     if let Some(audio) = &request.audio_ac3 {
         push_file_input(&mut args, audio);
     } else {
+        limit(&mut args);
         args.extend([
             "-f".to_string(),
             "lavfi".to_string(),
@@ -926,6 +1027,7 @@ pub fn build_motion_menu_args(request: &MotionMenuEncodeRequest) -> Vec<String> 
     }
     if let Some(transition) = transition {
         args.extend(["-stream_loop".to_string(), "-1".to_string()]);
+        limit(&mut args);
         push_file_input(&mut args, &transition.input);
     }
 
@@ -964,14 +1066,16 @@ pub fn build_motion_menu_args(request: &MotionMenuEncodeRequest) -> Vec<String> 
 
     let mut mask_index = mask_base;
     for (index, button) in request.buttons.iter().enumerate() {
-        let source_start = format!("{:.3}", button.source_start_ms as f64 / 1000.0);
-        let loop_duration = format!("{:.3}", button.loop_duration_ms as f64 / 1000.0);
         let loop_frames =
             ((button.loop_duration_ms as f64 * request.fps.as_f64() / 1000.0).ceil() as u64).max(1);
+        // A finite number of repeats that covers the menu: an endless loop
+        // left the graph without an end (one hang in 1.3 QA).
+        let repeats = (request.duration_ms / button.loop_duration_ms.max(1)).max(1) + 1;
         let raw = format!("btn{index}raw");
         let output = format!("btn{index}");
         filters.push(format!(
-            "[{}:v]trim=start={source_start}:duration={loop_duration},setpts=PTS-STARTPTS,fps={fps},loop=loop=-1:size={loop_frames},setpts=N/FRAME_RATE/TB,scale={}:{}:force_original_aspect_ratio=increase,crop={}:{},setsar=1,format=rgba[{raw}]",
+            // Scaled to the card before `loop` keeps the frames in memory.
+            "[{}:v]setpts=PTS-STARTPTS,fps={fps},scale={}:{}:force_original_aspect_ratio=increase,crop={}:{},setsar=1,format=rgba,trim=end_frame={loop_frames},loop=loop={repeats}:size={loop_frames},setpts=N/FRAME_RATE/TB[{raw}]",
             index + 1,
             button.width,
             button.height,
@@ -1008,7 +1112,14 @@ pub fn build_motion_menu_args(request: &MotionMenuEncodeRequest) -> Vec<String> 
     filters.push(format!(
         "[{current}][labels]overlay=0:0:shortest=0:format=auto{enable}[composed]"
     ));
-    filters.push("[composed]format=yuv420p[vout]".to_string());
+    // The menu ends with its last frame inside the graph, not with an output
+    // `-t`: every hang of 1.3 QA was in the last frames, where the output
+    // limit had to stop a graph that was still running.
+    let total_frames =
+        ((request.duration_ms as f64 * request.fps.as_f64() / 1000.0).ceil() as u64).max(1);
+    filters.push(format!(
+        "[composed]trim=end_frame={total_frames},format=yuv420p[vout]"
+    ));
     let audio_delay = if transition.is_some() {
         format!(
             ",adelay={}:all=1",
@@ -1061,8 +1172,6 @@ pub fn build_motion_menu_args(request: &MotionMenuEncodeRequest) -> Vec<String> 
         "-progress".to_string(),
         "pipe:1".to_string(),
         "-nostats".to_string(),
-        "-t".to_string(),
-        duration,
         "-f".to_string(),
         "dvd".to_string(),
         request.output_mpg.display().to_string(),
@@ -1587,8 +1696,18 @@ mod tests {
             assert_eq!(input_count, count + 3, "inputs for {count} buttons");
             let filter = filter_complex(&args);
             assert_eq!(filter.matches("overlay=").count(), count + 1);
-            assert!(filter.contains("trim=start=1.000:duration=5.000"));
-            assert!(filter.contains("loop=loop=-1:size=150"));
+            // Input seek and duration per card, never a looped whole file.
+            assert!(has_pair(&args, "-ss", "1.000"));
+            assert!(has_pair(&args, "-t", "5.000"));
+            assert_eq!(
+                args.iter()
+                    .filter(|arg| arg.as_str() == "-stream_loop")
+                    .count(),
+                0,
+                "{args:?}"
+            );
+            // 15 s menu, 5 s cards: a finite number of repeats.
+            assert!(filter.contains("trim=end_frame=150,loop=loop=4:size=150"));
             assert!(has_pair(&args, "-target", "ntsc-dvd"));
             assert!(has_pair(&args, "-b:v", "6000k"));
             assert!(has_pair(&args, "-maxrate", "8000k"));
@@ -1596,8 +1715,48 @@ mod tests {
             assert!(has_pair(&args, "-g", "15"));
             assert!(has_pair(&args, "-c:a", "ac3"));
             assert!(has_pair(&args, "-b:a", "192k"));
-            assert!(has_pair(&args, "-t", "15.000"));
+            // The graph ends the menu (15 s), not an output -t.
+            let frames = (15.0 * request.fps.as_f64()).ceil() as u64;
+            assert!(
+                filter.contains(&format!(
+                    "[composed]trim=end_frame={frames},format=yuv420p[vout]"
+                )),
+                "{filter}"
+            );
+            assert!(filter.contains("atrim=duration=15.000"));
+            assert!(!has_pair(&args, "-t", "15.000"));
+            // Retries: one filter thread, everything else the same.
+            let retry = single_threaded_filters(&args);
+            assert!(has_pair(&retry, "-filter_complex_threads", "1"));
+            assert_eq!(retry.len(), args.len() + 2);
+            // Every looped input ends: none waits for FFmpeg to stop it.
+            for (index, arg) in args.iter().enumerate() {
+                if arg == "-loop" || arg == "-stream_loop" {
+                    let input = index + args[index..].iter().position(|a| a == "-i").unwrap();
+                    assert!(
+                        args[index..input].iter().any(|a| a == "-t"),
+                        "endless input: {:?}",
+                        &args[index..=input + 1]
+                    );
+                }
+            }
+            assert!(has_pair(&args, "-t", "16.000"));
         }
+    }
+
+    #[test]
+    fn the_watchdog_follows_values_not_lines() {
+        let mut last: [String; 3] = Default::default();
+        assert!(progress_advanced("frame=10", &mut last));
+        assert!(progress_advanced("out_time_us=1000", &mut last));
+        assert!(progress_advanced("total_size=4096", &mut last));
+        // A stuck FFmpeg repeats the same block.
+        assert!(!progress_advanced("frame=10", &mut last));
+        assert!(!progress_advanced("out_time_us=1000", &mut last));
+        assert!(!progress_advanced("total_size=4096", &mut last));
+        assert!(!progress_advanced("progress=continue", &mut last));
+        assert!(!progress_advanced("speed=0.5x", &mut last));
+        assert!(progress_advanced("frame=11", &mut last));
     }
 
     #[test]

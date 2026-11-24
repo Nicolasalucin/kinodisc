@@ -489,7 +489,7 @@
                 { field: "h" as const, label: "H", value: rect.y1 - rect.y0 },
               ] as item}
                 <label class="ui-label">
-                  <span class="mb-0.5 block text-center text-[11px] text-slate-600">{item.label}</span>
+                  <span class="mb-0.5 block text-center text-[11px] text-slate-500">{item.label}</span>
                   <input
                     type="number"
                     step="2"
@@ -728,7 +728,7 @@
                 localError = t("No queda lugar para otro botón: achica o mueve los botones, o aplica una plantilla de varias páginas.");
               }
             }}
-            class="w-full rounded-lg bg-cyan-500 px-2 py-1.5 text-[12px] font-bold text-slate-950 transition hover:bg-cyan-400"
+            class="w-full rounded-lg bg-cyan-500 px-2 py-1.5 text-[12px] font-bold text-[#ffffff] transition hover:bg-cyan-600"
           >
             {t("+ Añadir botón")}
           </button>
@@ -758,7 +758,7 @@
                 {/each}
               </select>
               {#if videoAssets.length === 0}
-                <span class="mt-1 block text-[12px] leading-5 text-slate-600">
+                <span class="mt-1 block text-[12px] leading-5 text-slate-500">
                   {t("Importa un vídeo desde la biblioteca para usarlo como fondo en bucle.")}
                 </span>
               {:else if menu.background.kind === "videoLoop"}
@@ -1026,14 +1026,14 @@
             <ul class="space-y-1">
               {#each episode.chapters as chapter, index}
                 <li class="flex items-center gap-1.5 rounded-md border border-slate-800 px-2 py-1">
-                  <span class="w-3 text-center font-mono text-[11px] text-slate-600">{index + 1}</span>
+                  <span class="w-3 text-center font-mono text-[11px] text-slate-500">{index + 1}</span>
                   <span class="min-w-0 flex-1 truncate text-[11px] text-slate-300">{chapter.title}</span>
                   <span class="font-mono text-[11px] text-slate-500">{formatDuration(chapterTime(chapter))}</span>
                   {#if index > 0}
                     <button
                       type="button"
                       onclick={() => removeChapter(chapter.id)}
-                      class="rounded px-0.5 text-[11px] text-slate-600 transition hover:bg-rose-500/10 hover:text-rose-300"
+                      class="rounded px-0.5 text-[11px] text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-300"
                     >
                       ✕
                     </button>
@@ -1300,6 +1300,22 @@
                 onchange={(event) => projectStore.setTrellis(event.currentTarget.checked)}
                 class="accent-cyan-500"
               />
+            </label>
+          {:else if project?.disc.video.kind === "avchd"}
+            <label
+              class="flex items-center justify-between gap-2 rounded-lg border border-slate-800 px-2.5 py-1.5 text-[11px] text-slate-400"
+              title={t("Cada cuánto va una imagen completa. Más segundos dan más calidad a bitrate bajo; adelantar salta de a esa distancia.")}
+            >
+              <span>{t("GOP")}</span>
+              <select
+                class="ui-input ui-input-sm w-auto"
+                value={String(project.disc.video.gopSeconds ?? 1)}
+                onchange={(event) => projectStore.setGopSeconds(Number(event.currentTarget.value))}
+              >
+                <option value="1">{t("1 s (norma Blu-ray)")}</option>
+                <option value="2">{t("2 s: ~5 % menos bits en película, ~15 % en animación (probado en PS4)")}</option>
+                <option value="3">{t("3 s: ~7 % menos bits en película, ~20 % en animación (muy experimental)")}</option>
+              </select>
             </label>
           {/if}
         {/if}

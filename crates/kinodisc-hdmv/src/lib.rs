@@ -18,6 +18,10 @@ pub mod rle;
 pub mod segments;
 
 pub use bdmv::{
+    append_index_movie_titles, index_title_count, movie_objects, replace_movie_object_commands,
+    set_index_first_play_object, MAX_INDEX_TITLES,
+};
+pub use bdmv::{
     append_menu_movie_object, dummy_pgs, dummy_pgs_for_slots, inject_ig_into_menu_m2ts,
     inject_ig_into_menu_m2ts_file, inject_ig_into_menu_m2ts_stream, movie_object_count,
     packetize_pes, patch_menu_clpi, patch_menu_mpls, pes_transport_packet_count,
@@ -31,8 +35,8 @@ pub use m2ts::m2ts_from_pes_packets;
 pub use opcodes::{
     decode_command, disable_subtitle_stream, jump_object, jump_title, play_playlist,
     play_playlist_mark, set_audio_stream, set_audio_stream_keeping_subtitles, set_gpr,
-    set_subtitle_stream, HdmvCommand, OP_JUMP_OBJECT, OP_JUMP_TITLE, OP_NOP, OP_PLAY_PLAYLIST,
-    OP_PLAY_PLAYLIST_PM, OP_SET_GPR, OP_SET_STREAM, SUBTITLE_SCRATCH_GPR,
+    set_subtitle_stream, HdmvCommand, OP_CMP_GE_IMM, OP_CMP_LT_IMM, OP_JUMP_OBJECT, OP_JUMP_TITLE,
+    OP_NOP, OP_PLAY_PLAYLIST, OP_PLAY_PLAYLIST_PM, OP_SET_GPR, OP_SET_STREAM, SUBTITLE_SCRATCH_GPR,
 };
 pub use palette::{Palette, PaletteEntry};
 pub use pes::{pes_packets_from_segments, PesError, IG_PID, IG_STREAM_ID};

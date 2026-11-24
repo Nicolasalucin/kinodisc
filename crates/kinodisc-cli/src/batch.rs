@@ -239,6 +239,7 @@ pub async fn run(args: &[String]) -> ExitCode {
             avchd_folder: false,
             encoder: kinodisc_toolchain::EncoderPreference::Auto,
             cpu: kinodisc_toolchain::CpuUsage::default(),
+            content: kinodisc_toolchain::ContentType::default(),
         })
         .await;
         items[index].seconds = started.elapsed().as_secs_f64();

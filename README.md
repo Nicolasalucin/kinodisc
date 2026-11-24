@@ -31,6 +31,23 @@ discs that play on a living-room player: menus with thumbnails, chapters,
 several audio and subtitle tracks, play all, scene selection — the whole disc,
 checked before it is burned.
 
+## What's new in 1.3 (nightly)
+
+A nightly build: new and not fully tested (see the [changelog](CHANGELOG.md)).
+
+- **More quality for the same size** on AVCHD and Blu-ray: two-pass H.264 with
+  B-frames, about 20–30 % fewer bits for the same picture on SD, 15–35 % on HD.
+- **Episodes go on to the next one**, and the next-chapter key reaches the next
+  episode (R1 on a PS4).
+- **Intro on AVCHD and Blu-ray**, when the disc starts and/or when nobody
+  chooses anything on the menu.
+- **Long-series templates**: 12, 18 or 24 episodes a page.
+- **Content type** (film, animation, grainy video), **CPU maximum** encoder and
+  a **GOP of 2 seconds** (3 s very experimental).
+- **DVD-Video picks half resolution by bitrate**, not by length.
+- **The CLI builds a whole disc**: new project, episodes, menu, intro,
+  subtitles, GOP.
+
 ## What's new in 1.2
 
 - **Auto-play**: a toggle on the DVD main menu starts playing everything when
@@ -182,6 +199,11 @@ kinodisc-cli toolchain install all                   # verified downloads (Windo
 kinodisc-cli render project.json -o out --folder     # ISO + VIDEO_TS/BDMV folder
 kinodisc-cli render project.json --encoder cpu-slow  # H.264 encoder (auto, cpu-fast, cpu-medium, nvenc…)
 kinodisc-cli render project.json --cpu background    # processor use (background, balanced, full)
+kinodisc-cli project new disc.json episodes/ --mode avchd --template compact-index
+kinodisc-cli project intro disc.json intro.mp4        # intro when the disc starts (--idle-only)
+kinodisc-cli project menu disc.json --idle intro --idle-seconds 90
+kinodisc-cli project subtitles disc.json subs/       # .srt matched to episodes by name
+kinodisc-cli project gop disc.json 2                 # AVCHD/Blu-ray GOP (1, 2 or 3 s)
 kinodisc-cli split project.json --per-episode        # one project per disc
 kinodisc-cli scenes project.json                     # add scene menus from chapters
 kinodisc-cli template project.json multi-page-tv-grid  # apply a menu template (--list)

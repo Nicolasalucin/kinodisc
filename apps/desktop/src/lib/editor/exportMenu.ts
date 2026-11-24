@@ -195,8 +195,16 @@ export async function exportMotionMenu(
   labels.height = height;
   const labelsContext = labels.getContext("2d");
   if (!labelsContext) throw new Error(t("No se pudo crear el contexto 2D de las etiquetas."));
-  // Over a video background, items go on the transparent overlay layer.
-  await drawMenuItems(labelsContext, menu, thumbnailUrls);
+  // The overlay is drawn above the moving cards: over a still background its
+  // shapes and pictures (a template's opaque tpl:bg) stay in the background,
+  // or they hide every card (mirrors compose.rs). Over a video background
+  // everything goes on the overlay.
+  if (menu.background.kind === "videoLoop") {
+    await drawMenuItems(labelsContext, menu, thumbnailUrls);
+  } else {
+    await drawMenuItems(backgroundContext, menu, thumbnailUrls, (item) => item.kind !== "text");
+    await drawMenuItems(labelsContext, menu, thumbnailUrls, (item) => item.kind === "text");
+  }
 
   const thumbnailImages = new Map<string, HTMLImageElement>();
   for (const key of new Set(

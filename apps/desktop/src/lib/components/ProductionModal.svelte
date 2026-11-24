@@ -15,6 +15,7 @@
   import {
     commands,
     type BurnProgress_Deserialize,
+    type ContentType,
     type CpuUsage,
     type JobEvent_Deserialize,
   } from "../api/bindings";
@@ -22,7 +23,15 @@
   import { compositeProjectMenus } from "../production";
   import { projectStore } from "../stores/project.svelte";
   import { basename, formatBytes, safeFileName } from "../utils/format";
-  import { cpuOnlyFormat, encoderPreference, HARDWARE_LABELS, recommendedEncoder, type EncoderChoice } from "../utils/encoder";
+  import {
+    cpuOnlyFormat,
+    encoderPreference,
+    HARDWARE_LABELS,
+    recommendedEncoder,
+    rememberContent,
+    rememberedContent,
+    type EncoderChoice,
+  } from "../utils/encoder";
 
   // The output folder is remembered between productions (on this computer).
   const OUTPUT_KEY = "kinodisc_output_dir";
@@ -43,7 +52,14 @@
 
   // Episodes no menu button can start: shown before producing the disc.
   // and Blu-ray subtitles that would be left out.
-  const PREFLIGHT = new Set(["W_EPISODE_NO_BUTTON", "W_PGS_LAYOUT_MISMATCH", "W_AVCHD_AUDIO_LAYOUT"]);
+  const PREFLIGHT = new Set([
+    "W_EPISODE_NO_BUTTON",
+    "W_PGS_LAYOUT_MISMATCH",
+    "W_AVCHD_AUDIO_LAYOUT",
+    // Long GOPs outside what was tested on players.
+    "W_GOP_3_EXPERIMENTAL",
+    "W_LONG_GOP_BLU_RAY",
+  ]);
   const unreachable = $derived(
     projectStore.plan?.warnings.filter((warning) => PREFLIGHT.has(warning.code)) ?? [],
   );
@@ -93,6 +109,10 @@
       // Not remembered, still used for this render.
     }
   });
+  let contentType = $state<ContentType>(rememberedContent(projectStore.project?.id));
+  $effect(() => {
+    rememberContent(projectStore.project?.id, contentType);
+  });
   // "One disc per episode" and the like are remembered per project.
   type DiscSplit = "single" | "fitToDisc" | "perEpisode";
   const splitKey = `kinodisc_split_${projectStore.project?.id ?? ""}`;
@@ -138,9 +158,10 @@
           ? t("Automático ({encoder}; si falla, CPU medio)", { encoder: HARDWARE_LABELS[hardwareEncoders[0]] })
           : t("Automático (CPU medio)"),
       },
-      { value: "cpuFast", label: mark("cpuFast", t("CPU rápido (x264 fast): ~0,7× el tiempo, algo menos de calidad")) },
-      { value: "cpuOnly", label: mark("cpuOnly", t("CPU medio (x264 medium): equilibrado")) },
-      { value: "cpuSlow", label: mark("cpuSlow", t("CPU lento (x264 slow): ~2× el tiempo, la mejor calidad")) },
+      { value: "cpuFast", label: mark("cpuFast", t("CPU rápido (x264 fast): la base, el más rápido")) },
+      { value: "cpuOnly", label: mark("cpuOnly", t("CPU medio (x264 medium): ~5 % menos bits que el rápido, casi el mismo tiempo")) },
+      { value: "cpuSlow", label: mark("cpuSlow", t("CPU lento (x264 slow): ~8 % menos bits que el rápido, ~1,2× el tiempo")) },
+      { value: "cpuSlower", label: mark("cpuSlower", t("CPU máximo (x264 slower): ~10 % menos bits que el rápido, ~1,5× el tiempo")) },
       ...hardwareEncoders.map((encoder) => ({
         value: `hw:${encoder}` as EncoderChoice,
         label: t("{encoder} (GPU): lo más rápido, menos calidad a tasas bajas", { encoder: HARDWARE_LABELS[encoder] }),
@@ -202,7 +223,15 @@
     }
   }
   // What stops this mode from working at all, said before the user starts.
-  const missingTools = $derived(projectStore.toolsReport?.missingRequired ?? []);
+  // Only the tools this disc uses: AVCHD/Blu-ray never run DVDAuthor or
+  // Spumux, and the Linux burn tools matter only when burning (1.3 QA).
+  const missingTools = $derived(
+    (projectStore.toolsReport?.missingRequired ?? []).filter((tool) => {
+      if (project?.disc.mode === "avchd" && (tool === "dvdauthor" || tool === "spumux")) return false;
+      if (!needsBurn && (tool === "growisofs" || tool === "dvdRwMediaInfo")) return false;
+      return true;
+    }),
+  );
   const emptyMenu = $derived(
     project?.menus.find((menu) => !menu.buttons.some((button) => button.enabled)) ?? null,
   );
@@ -516,7 +545,7 @@
         // name, so an "<name>.iso" made earlier is neither replaced nor removed.
         const isoName = mode === "folder" ? `${partName}.kinodisc-tmp.iso` : `${partName}.iso`;
         const outcome = await unwrap(
-          commands.renderStart(part.project, root, encoderPreference(encoderChoice), isoName, cpuUsage, channel),
+          commands.renderStart(part.project, root, encoderPreference(encoderChoice), isoName, cpuUsage, contentType, channel),
         );
         elapsedMs += outcome.elapsedMs;
         projectStore.renderVerification = outcome.verification ?? null;
@@ -810,6 +839,23 @@
               {t("Este formato (entrelazado o PsF) se codifica siempre por CPU.")}
             {/if}
           </p>
+          <label class="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+            <span class="text-[13px] text-slate-300">{t("Tipo de contenido")}</span>
+            <select class="ui-input ui-input-sm min-w-0 max-w-full" bind:value={contentType} disabled={busy}>
+              <option value="film">{t("Película o serie filmada")}</option>
+              <option value="animation">{t("Animación o anime")}</option>
+              <option value="grain">{t("Vídeo casero o con mucho grano")}</option>
+            </select>
+          </label>
+          <p class="ui-hint mt-1.5">
+            {#if contentType === "animation"}
+              {t("Ajusta el codificador a colores planos y líneas definidas: en animación, ~5–10 % menos bits para la misma calidad.")}
+            {:else if contentType === "grain"}
+              {t("Conserva el grano de la imagen en lugar de alisarlo.")}
+            {:else}
+              {t("Los ajustes normales del codificador.")}
+            {/if}
+          </p>
         </div>
       {/if}
 
@@ -881,6 +927,7 @@
                 class="ui-input mt-2 w-full font-mono"
                 bind:value={outputDir}
                 disabled={busy}
+                aria-label={t("Carpeta de salida")}
               />
               <p class="mt-1 text-[11px] text-slate-500">
                 {!defaultsReady

@@ -266,8 +266,15 @@ pub fn build_dvdauthor_xml(request: &AuthoringRequest<'_>) -> Result<String, Aut
     xml.push_str("  <vmgm>\n");
     if request.intro.is_some() {
         // The implicit first-play jumps to the `entry="title"` root menu and
-        // would skip the intro PGC.
-        xml.push_str("    <fpc>jump vmgm menu 1;</fpc>\n");
+        // would skip the intro PGC. An intro only for idle menus is reached
+        // from the root menu's `<post>`.
+        let at_start = request
+            .project
+            .first_play
+            .as_ref()
+            .is_none_or(|intro| intro.at_start);
+        let first = if at_start { 1 } else { root_index };
+        xml.push_str(&format!("    <fpc>jump vmgm menu {first};</fpc>\n"));
     }
     xml.push_str("    <menus>\n");
 
@@ -311,15 +318,21 @@ pub fn build_dvdauthor_xml(request: &AuthoringRequest<'_>) -> Result<String, Aut
                 xml_escape(&command)
             ));
         }
-        // Auto-play: after the menu has been shown once with no choice, the
-        // disc plays everything (same command as a Play All button).
-        let auto_play = is_root
-            && !request.episodes.is_empty()
-            && request
+        // Idle action: after the menu has been shown once with no choice, the
+        // disc plays everything (same command as a Play All button) or the
+        // intro, which returns to this menu when it ends.
+        let idle = if is_root {
+            request
                 .project
                 .menu(menu.menu_id)
-                .is_some_and(|menu| menu.timing.auto_play);
-        let post = if auto_play {
+                .map(|menu| menu.timing.idle())
+                .unwrap_or_default()
+        } else {
+            kinodisc_domain::IdleAction::Wait
+        };
+        let post = if idle == kinodisc_domain::IdleAction::Intro && request.intro.is_some() {
+            "jump vmgm menu 1;".to_string()
+        } else if idle == kinodisc_domain::IdleAction::PlayAll && !request.episodes.is_empty() {
             button_command(
                 &ButtonAction::PlayAll,
                 request,
@@ -1188,6 +1201,46 @@ mod tests {
         .expect("xml");
         assert!(xml.contains("/tmp/intro.mpg"));
         assert!(xml.contains("jump vmgm menu 2;"));
+    }
+
+    #[test]
+    fn idle_intro_plays_the_intro_and_needs_one() {
+        let mut project = fixture_project();
+        let root = project.root_menu;
+        project
+            .menus
+            .iter_mut()
+            .find(|menu| menu.id == root)
+            .unwrap()
+            .timing
+            .idle_action = kinodisc_domain::IdleAction::Intro;
+        let menus = rendered_menus(&project);
+        let episodes = episode_files(&project);
+        let xml = |intro: Option<&Path>| {
+            build_dvdauthor_xml(&AuthoringRequest {
+                project: &project,
+                intro,
+                menus: &menus,
+                episodes: &episodes,
+            })
+            .expect("xml")
+        };
+        // The root menu (vmgm menu 2 once the intro is menu 1) ends into the
+        // intro, and the intro comes back to it.
+        let with_intro = xml(Some(Path::new("/tmp/intro.mpg")));
+        let vmgm = &with_intro[..with_intro.find("</vmgm>").unwrap()];
+        assert_eq!(
+            vmgm.matches("<post>jump vmgm menu 1;</post>").count(),
+            1,
+            "{with_intro}"
+        );
+        assert!(
+            vmgm.contains("<post>jump vmgm menu 2;</post>"),
+            "{with_intro}"
+        );
+        // Without an intro the menu just waits.
+        let without = xml(None);
+        assert!(without.contains("<post>jump menu 1;</post>"), "{without}");
     }
 
     #[test]

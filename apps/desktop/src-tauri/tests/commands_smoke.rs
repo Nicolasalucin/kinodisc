@@ -73,7 +73,7 @@ fn project_save_and_open_round_trip() {
 fn menu_templates_are_exposed_and_applied_through_tauri_commands() {
     isolate_user_data();
     let templates = menu_templates();
-    assert_eq!(templates.len(), 15);
+    assert_eq!(templates.len(), 18);
     let project = load_project(fixture_path()).expect("fixture");
     let result = menu_apply_template(project, MenuTemplateId::CinemaDark).expect("template");
     assert!(result.menus.len() >= 2);
@@ -145,6 +145,7 @@ async fn render_start_forwards_job_events_and_produces_iso() {
         output.display().to_string(),
         kinodisc_toolchain::EncoderPreference::CpuOnly,
         Some("Smoke disc.iso".to_string()),
+        None,
         None,
         channel,
     )

@@ -522,18 +522,18 @@ fn check_streams(reader: &UdfReader<'_>, checks: &mut CheckList) {
             None,
         );
     }
-    if has_pgs || has_ig {
+    // Only a PGS stream (0x90) is a subtitle; the menu's IG (0x91) is not
+    // (1.3 QA: discs without subtitles passed on their menu stream). A disc
+    // without subtitles is fine, so it is skipped rather than warned.
+    if has_pgs {
         checks.pass(
             "BDMV-PGS",
-            "El PMT declara un stream de presentation graphics.",
+            "El PMT declara un stream de subtítulos PGS (0x90).",
         );
     } else {
-        warn_with(
-            checks,
+        checks.skip(
             "BDMV-PGS",
-            "No se encontró un stream PGS/IG en los PMT inspeccionados.".to_string(),
-            "BDMV/STREAM",
-            None,
+            "El disco no lleva subtítulos PGS en los PMT inspeccionados.",
         );
     }
 }

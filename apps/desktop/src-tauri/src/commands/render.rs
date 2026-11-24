@@ -261,6 +261,7 @@ pub async fn render_start(
     hardware_encoding: kinodisc_toolchain::EncoderPreference,
     iso_name: Option<String>,
     cpu_usage: Option<kinodisc_toolchain::CpuUsage>,
+    content: Option<kinodisc_toolchain::ContentType>,
     channel: Channel<JobEvent>,
 ) -> Result<RenderOutcome, String> {
     let job_id = JobId::new();
@@ -298,13 +299,14 @@ pub async fn render_start(
     let disc_kind = project.disc.capacity.label().to_string();
     let mut log = JobLog::create("produccion");
     log.line(format!(
-        "Proyecto «{}»: {} {}, {} episodios; codificador {}; procesador {}",
+        "Proyecto «{}»: {} {}, {} episodios; codificador {}; procesador {}; contenido {}",
         project.name,
         mode_label(project.disc.mode),
         disc_kind,
         project.episodes.len(),
         encoder_label(hardware_encoding),
-        cpu_label(cpu_usage.unwrap_or_default())
+        cpu_label(cpu_usage.unwrap_or_default()),
+        content_label(content.unwrap_or_default())
     ));
     log.line(format!("Carpeta de salida: {}", output_root.display()));
     let cancel_flag = Arc::clone(&cancel);
@@ -320,6 +322,7 @@ pub async fn render_start(
                 cancel: Some(cancel),
                 hardware_encoding,
                 cpu_usage: cpu_usage.unwrap_or_default(),
+                content: content.unwrap_or_default(),
                 ..RenderOptions::default()
             },
             sender,
@@ -529,7 +532,16 @@ fn encoder_label(encoder: EncoderPreference) -> String {
         EncoderPreference::CpuFast => "CPU rápido (x264 fast)".to_string(),
         EncoderPreference::CpuOnly => "CPU medio (x264 medium)".to_string(),
         EncoderPreference::CpuSlow => "CPU lento (x264 slow)".to_string(),
+        EncoderPreference::CpuSlower => "CPU máximo (x264 slower)".to_string(),
         EncoderPreference::Prefer(hardware) => format!("GPU {hardware:?}"),
+    }
+}
+
+fn content_label(content: kinodisc_toolchain::ContentType) -> &'static str {
+    match content {
+        kinodisc_toolchain::ContentType::Film => "película",
+        kinodisc_toolchain::ContentType::Animation => "animación",
+        kinodisc_toolchain::ContentType::Grain => "vídeo con grano",
     }
 }
 

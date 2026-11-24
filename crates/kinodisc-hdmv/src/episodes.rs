@@ -152,12 +152,22 @@ pub fn append_episode_object(
     playlist: u16,
     after_object: u16,
 ) -> Result<(Vec<u8>, u16), BdmvError> {
+    append_episode_object_then(movie_object, playlist, jump_object(u32::from(after_object)))
+}
+
+/// Like [`append_episode_object`], leaving with `exit` (`JumpTitle` to the
+/// next episode's title, or `JumpObject` back to the root menu).
+pub fn append_episode_object_then(
+    movie_object: &[u8],
+    playlist: u16,
+    exit: HdmvCommand,
+) -> Result<(Vec<u8>, u16), BdmvError> {
     // The register is cleared before leaving so the next episode (or the
     // next button press) starts from its beginning.
     let commands: [HdmvCommand; 3] = [
         play_playlist_mark(u32::from(playlist), EPISODE_MARK_GPR),
         set_gpr(EPISODE_MARK_GPR, 0),
-        jump_object(u32::from(after_object)),
+        exit,
     ];
     if movie_object.len() < 50
         || (&movie_object[..8] != b"MOBJ0200" && &movie_object[..8] != b"MOBJ0100")
@@ -232,5 +242,68 @@ mod tests {
         assert_eq!(command(0), play_playlist_mark(7, EPISODE_MARK_GPR));
         assert_eq!(command(1), set_gpr(EPISODE_MARK_GPR, 0));
         assert_eq!(command(2), jump_object(3));
+        let (next, _) =
+            append_episode_object_then(&base, 7, crate::opcodes::jump_title(4)).unwrap();
+        let bytes: [u8; 12] = next[next.len() - 12..].try_into().unwrap();
+        assert_eq!(
+            crate::opcodes::decode_command(&bytes),
+            crate::opcodes::jump_title(4)
+        );
+    }
+
+    #[test]
+    fn a_menu_object_can_be_rewritten_and_first_play_pointed_alone() {
+        use crate::bdmv::{
+            movie_objects, replace_movie_object_commands, set_index_first_play_object,
+        };
+        use crate::native::build_index_bdmv;
+        let base = build_movie_object(&[jump_object(0)]).unwrap();
+        let (two, _) = append_episode_object(&base, 7, 0).unwrap();
+        let (three, _) = append_episode_object(&two, 8, 0).unwrap();
+        let idle = [crate::opcodes::play_playlist(3), jump_object(2)];
+        let rewritten = replace_movie_object_commands(&three, 1, &idle).unwrap();
+        let objects = movie_objects(&rewritten).unwrap();
+        assert_eq!(objects.len(), 3);
+        assert_eq!(objects[1].1, idle.to_vec());
+        assert_eq!(objects[2], movie_objects(&three).unwrap()[2]);
+        assert_eq!(rewritten.len(), three.len() - 12);
+        assert!(replace_movie_object_commands(&three, 3, &idle).is_err());
+        let index = set_index_first_play_object(&build_index_bdmv(1, 1), 4).unwrap();
+        assert_eq!(&index[82 + 6..82 + 8], &4u16.to_be_bytes());
+        assert_eq!(
+            &index[94 + 6..94 + 8],
+            &1u16.to_be_bytes(),
+            "Top Menu unchanged"
+        );
+    }
+
+    #[test]
+    fn episodes_become_movie_titles_and_survive_the_avchd_conversion() {
+        use crate::bdmv::{append_index_movie_titles, index_title_count, set_index_menu_object};
+        use crate::native::{avchd_navigation_file, build_index_bdmv};
+        let index = build_index_bdmv(2, 1);
+        assert_eq!(index_title_count(&index).unwrap(), 1);
+        let (with_titles, first) = append_index_movie_titles(&index, &[5, 6, 7]).unwrap();
+        assert_eq!(first, 2);
+        assert_eq!(with_titles.len(), 120 + 36);
+        assert_eq!(index_title_count(&with_titles).unwrap(), 4);
+        // Title 3 (second episode): HDMV movie title on object 6.
+        let entry = 78 + 4 + 26 + 2 * 12;
+        assert_eq!(with_titles[entry], 0x40);
+        assert_eq!(with_titles[entry + 4], 0x00, "movie, not interactive");
+        assert_eq!(&with_titles[entry + 6..entry + 8], &6u16.to_be_bytes());
+        // Setting the root menu afterwards keeps the titles.
+        let rooted = set_index_menu_object(&with_titles, 9).unwrap();
+        assert_eq!(index_title_count(&rooted).unwrap(), 4);
+        // AVCHD: the extension follows the last title, nothing is cut.
+        let avchd = avchd_navigation_file(&rooted).unwrap();
+        assert_eq!(&avchd[12..16], &156u32.to_be_bytes());
+        assert_eq!(&avchd[16..156], &rooted[16..156]);
+        assert_eq!(avchd.len(), 156 + 408);
+        assert_eq!(index_title_count(&avchd).unwrap(), 4);
+        // Titles added after the conversion move the extension too.
+        let (later, _) = append_index_movie_titles(&avchd, &[8]).unwrap();
+        assert_eq!(&later[12..16], &168u32.to_be_bytes());
+        assert_eq!(&later[168..], &avchd[156..]);
     }
 }

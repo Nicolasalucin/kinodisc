@@ -29,6 +29,20 @@ const CARD_LABEL_HEIGHT: f32 = 28.0;
 /// Writes the composition of every menu with buttons or items into `dir`.
 /// Returns how many menus were composed. A picture that cannot be read is
 /// skipped (like the editor), never fatal.
+/// True when the menu is encoded with motion, so its cards and text go on
+/// the overlay and the still parts on the background. It must match the
+/// encoder (`animated` in the render): a menu left with a motion setting but
+/// no moving card is encoded still, and a split composition then lost every
+/// card (1.3 QA, F-30).
+pub fn composes_motion(menu: &Menu) -> bool {
+    matches!(menu.background, MenuBackground::VideoLoop { .. })
+        || (menu.motion_config.is_some()
+            && menu
+                .buttons
+                .iter()
+                .any(|button| button.motion_preview.is_some() && button.thumbnail.is_some()))
+}
+
 pub fn compose_project_menus(
     project: &Project,
     project_dir: &Path,
@@ -175,12 +189,7 @@ impl<'a> Composer<'a> {
         let width = u32::from(menu.canvas.width);
         let height = u32::from(menu.canvas.height);
         let video_background = matches!(menu.background, MenuBackground::VideoLoop { .. });
-        let motion = video_background
-            || menu.motion_config.is_some()
-            || menu
-                .buttons
-                .iter()
-                .any(|button| button.motion_preview.is_some() && button.thumbnail.is_some());
+        let motion = composes_motion(menu);
 
         let mut background = RgbaImage::from_pixel(width, height, Rgba(BASE));
         if let MenuBackground::Static { asset } = &menu.background {
@@ -207,9 +216,20 @@ impl<'a> Composer<'a> {
         }
 
         if motion {
-            // Background stays bare; items and labels go on the overlay.
+            // Labels go on the overlay, which is drawn above the moving
+            // cards. Over a still background its shapes and pictures (a
+            // template's opaque `tpl:bg`) stay in the background: on the
+            // overlay they hid every card (1.3 QA). Over a video background
+            // everything goes on the overlay, or it would be lost.
             let mut labels = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 0]));
-            self.draw_items(&mut labels, menu);
+            if video_background {
+                self.draw_items(&mut labels, menu, |_| true);
+            } else {
+                self.draw_items(&mut background, menu, |item| {
+                    !matches!(item, MenuItem::Text(_))
+                });
+                self.draw_items(&mut labels, menu, |item| matches!(item, MenuItem::Text(_)));
+            }
             for button in &menu.buttons {
                 let animated = button.motion_preview.is_some()
                     && (button.thumbnail.is_some()
@@ -224,7 +244,7 @@ impl<'a> Composer<'a> {
                 .save(self.dir.join(format!("labels-{}.png", menu.id)))
                 .map_err(io)?;
         } else {
-            self.draw_items(&mut background, menu);
+            self.draw_items(&mut background, menu, |_| true);
             for button in &menu.buttons {
                 self.draw_button(&mut background, button, false);
             }
@@ -234,8 +254,13 @@ impl<'a> Composer<'a> {
             .map_err(io)
     }
 
-    fn draw_items(&mut self, canvas: &mut RgbaImage, menu: &Menu) {
-        for item in &menu.items {
+    fn draw_items(
+        &mut self,
+        canvas: &mut RgbaImage,
+        menu: &Menu,
+        keep: impl Fn(&MenuItem) -> bool,
+    ) {
+        for item in menu.items.iter().filter(|item| keep(item)) {
             match item {
                 MenuItem::Text(text) => {
                     if text.text.trim().is_empty() || text.rect.w <= 0.0 || text.rect.h <= 0.0 {
@@ -989,6 +1014,42 @@ mod tests {
         assert!((size - 15.0).abs() < 0.01);
         assert!(text.ends_with('…'));
         assert!(line_width(&glyphs, size, &text) <= 120.0);
+    }
+
+    #[test]
+    fn only_menus_encoded_with_motion_are_split() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/projects/bd25-menu.json");
+        let project = kinodisc_project::load_project(path).expect("fixture");
+        let mut menu = project.menus[0].clone();
+        assert!(!composes_motion(&menu));
+        let asset = project.assets[0].id;
+        let thumbnail = || {
+            Some(kinodisc_domain::ThumbnailSpec {
+                asset,
+                in_frame: 0,
+                duration_frames: 0,
+                fps: kinodisc_domain::FrameRate::NTSC,
+            })
+        };
+        // «Dejarlas quietas»: the motion setting stays, no card moves.
+        menu.motion_config = Some(kinodisc_domain::MotionMenuConfig {
+            duration_ms: 30_000,
+            loop_enabled: true,
+            fade_in_ms: 500,
+            fade_out_ms: 500,
+            audio_volume: 1.0,
+        });
+        menu.buttons[0].thumbnail = thumbnail();
+        assert!(!composes_motion(&menu), "a still menu keeps its cards");
+        menu.buttons[0].motion_preview = Some(kinodisc_domain::ButtonMotionConfig {
+            source_start_ms: 0,
+            loop_duration_ms: 10_000,
+        });
+        assert!(composes_motion(&menu));
+        // A moving card without the menu's motion setting is encoded still.
+        menu.motion_config = None;
+        assert!(!composes_motion(&menu));
     }
 
     #[test]

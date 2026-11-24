@@ -381,7 +381,7 @@
             >
               <span class="block truncate text-[11px] font-semibold text-slate-100">{node.title}</span>
               <span class="mt-0.5 block truncate text-[11px] text-slate-500">{node.subtitle}</span>
-              <span class="mt-1 flex items-center gap-1 text-[11px] text-slate-600">
+              <span class="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
                 <span class="rounded bg-slate-950/70 px-1 py-0.5">{incoming(node.id).length} ent.</span>
                 <span class="rounded bg-slate-950/70 px-1 py-0.5">{outgoing(node.id).length} sal.</span>
                 {#if node.kind === "episode"}
@@ -428,11 +428,11 @@
             </span>
           {/each}
           {#if incoming(selected.id).length === 0 && outgoing(selected.id).length === 0}
-            <span class="text-[11px] text-slate-600">{t("Sin conexiones.")}</span>
+            <span class="text-[11px] text-slate-500">{t("Sin conexiones.")}</span>
           {/if}
         </div>
       {/if}
-      <div class="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
+      <div class="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
         <span>{t("Líneas discontinuas: retornos automáticos o reproducir todo.")}</span>
         {#if projectStore.plan?.layerBreakSector !== null && projectStore.plan?.layerBreakSector !== undefined}
           <span class="rounded border border-amber-500/25 bg-amber-500/10 px-1 py-0.5 text-amber-200">

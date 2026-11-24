@@ -3,7 +3,7 @@ use kinodisc_jobs::JobEventKind;
 use kinodisc_plan::calculate_bitrate_plan;
 use kinodisc_project::load_and_validate;
 use kinodisc_render::{render_project_with_options, RenderError, RenderOptions};
-use kinodisc_toolchain::{CpuUsage, EncoderPreference};
+use kinodisc_toolchain::{ContentType, CpuUsage, EncoderPreference};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,6 +23,18 @@ pub(crate) struct RenderArgs {
     pub(crate) encoder: EncoderPreference,
     /// How much of the processor the encoders may take.
     pub(crate) cpu: CpuUsage,
+    /// What the videos are, to tune the encoders.
+    pub(crate) content: ContentType,
+}
+
+/// `--content` values: `film` (default), `animation` or `grain`.
+pub(crate) fn parse_content(value: &str) -> Option<ContentType> {
+    Some(match value.to_ascii_lowercase().as_str() {
+        "film" | "movie" | "pelicula" => ContentType::Film,
+        "animation" | "anime" | "cartoon" | "animacion" => ContentType::Animation,
+        "grain" | "grainy" | "grano" => ContentType::Grain,
+        _ => return None,
+    })
 }
 
 /// `--cpu` values: `background`, `balanced` (default) or `full`.
@@ -35,7 +47,8 @@ pub(crate) fn parse_cpu(value: &str) -> Option<CpuUsage> {
     })
 }
 
-/// `--encoder` values: `auto`, `cpu-fast`, `cpu-medium`, `cpu-slow`, or a
+/// `--encoder` values: `auto`, `cpu-fast`, `cpu-medium`, `cpu-slow`,
+/// `cpu-slower`, or a
 /// hardware encoder (`nvenc`, `qsv`, `amf`, `vaapi`, `videotoolbox`).
 pub(crate) fn parse_encoder(value: &str) -> Option<EncoderPreference> {
     use kinodisc_toolchain::HardwareEncoder;
@@ -44,6 +57,7 @@ pub(crate) fn parse_encoder(value: &str) -> Option<EncoderPreference> {
         "cpu-fast" | "fast" => EncoderPreference::CpuFast,
         "cpu" | "cpu-medium" | "medium" => EncoderPreference::CpuOnly,
         "cpu-slow" | "slow" => EncoderPreference::CpuSlow,
+        "cpu-slower" | "slower" => EncoderPreference::CpuSlower,
         "nvenc" => EncoderPreference::Prefer(HardwareEncoder::NvencH264),
         "qsv" => EncoderPreference::Prefer(HardwareEncoder::QsvH264),
         "amf" => EncoderPreference::Prefer(HardwareEncoder::AmfH264),
@@ -153,7 +167,10 @@ pub(crate) async fn render(args: &RenderArgs) -> Result<PathBuf, String> {
                     if level != kinodisc_jobs::LogLevel::Debug
                         && (message.contains("se reutiliza")
                             || message.starts_with("Reanudación")
-                            || message.contains("sin recodificar")) =>
+                            || message.contains("sin recodificar")
+                            || message.starts_with("Intro HD")
+                            || message.starts_with("Menú raíz sin elección")
+                            || message.starts_with("Episodios: ")) =>
                 {
                     println!("  {message}");
                 }
@@ -177,6 +194,7 @@ pub(crate) async fn render(args: &RenderArgs) -> Result<PathBuf, String> {
             hardware_encoding: args.encoder,
             mux_backend: kinodisc_render::MuxBackend::Auto,
             cpu_usage: args.cpu,
+            content: args.content,
         },
         sender,
     ));
@@ -239,6 +257,7 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
     let mut avchd_folder = false;
     let mut encoder = EncoderPreference::Auto;
     let mut cpu = CpuUsage::default();
+    let mut content = ContentType::default();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -258,7 +277,7 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
                 };
                 encoder = parse_encoder(value).ok_or_else(|| {
                     format!(
-                        "Codificador desconocido: {value}. Usa auto, cpu-fast, cpu-medium, cpu-slow, nvenc, qsv, amf, vaapi o videotoolbox."
+                        "Codificador desconocido: {value}. Usa auto, cpu-fast, cpu-medium, cpu-slow, cpu-slower, nvenc, qsv, amf, vaapi o videotoolbox."
                     )
                 })?;
             }
@@ -269,6 +288,15 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
                 };
                 cpu = parse_cpu(value).ok_or_else(|| {
                     format!("Uso de CPU desconocido: {value}. Usa background, balanced o full.")
+                })?;
+            }
+            "--content" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("Falta el valor de --content.".to_string());
+                };
+                content = parse_content(value).ok_or_else(|| {
+                    format!("Tipo de contenido desconocido: {value}. Usa film, animation o grain.")
                 })?;
             }
             "--mode" => {
@@ -298,7 +326,7 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
     }
     Ok(RenderArgs {
         project: project.ok_or_else(|| {
-            "Uso: kinodisc-cli render <project.json> [-o <dir>] [--mode dvd|avchd] [--encoder <tipo>] [--cpu <uso>] [--folder] [--no-probe]"
+            "Uso: kinodisc-cli render <project.json> [-o <dir>] [--mode dvd|avchd] [--encoder <tipo>] [--cpu <uso>] [--content film|animation|grain] [--folder] [--no-probe]"
                 .to_string()
         })?,
         output,
@@ -307,6 +335,7 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
         avchd_folder,
         encoder,
         cpu,
+        content,
     })
 }
 

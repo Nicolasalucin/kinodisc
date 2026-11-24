@@ -15,7 +15,7 @@
 //! The result is a standards-shaped HDMV menu that libbluray recognizes and
 //! decodes as an interactive graphics plane.
 
-use crate::opcodes::{jump_object, play_playlist};
+use crate::opcodes::{jump_object, play_playlist, HdmvCommand};
 use crate::pes::IG_PID;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -664,6 +664,68 @@ pub fn movie_object_count(movie_object: &[u8]) -> Result<u16, BdmvError> {
     read_u16(movie_object, 48).ok_or(BdmvError::InvalidMovieObject("num_objects"))
 }
 
+/// The commands of every object in a MovieObject.bdmv, with their 16-bit
+/// flags (resume intention, menu-call and title-search masks).
+pub fn movie_objects(movie_object: &[u8]) -> Result<Vec<(u16, Vec<HdmvCommand>)>, BdmvError> {
+    let count = movie_object_count(movie_object)?;
+    let data_len =
+        read_u32(movie_object, 40).ok_or(BdmvError::InvalidMovieObject("data_len"))? as usize;
+    if 44 + data_len > movie_object.len() {
+        return Err(BdmvError::InvalidMovieObject("data_len incoherente"));
+    }
+    let mut offset = 50usize;
+    let mut objects = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let flags = read_u16(movie_object, offset).ok_or(BdmvError::InvalidMovieObject("flags"))?;
+        let commands = read_u16(movie_object, offset + 2)
+            .ok_or(BdmvError::InvalidMovieObject("num_commands"))?;
+        offset += 4;
+        let mut list = Vec::with_capacity(usize::from(commands));
+        for _ in 0..commands {
+            let bytes: [u8; 12] = movie_object
+                .get(offset..offset + 12)
+                .and_then(|slice| slice.try_into().ok())
+                .ok_or(BdmvError::InvalidMovieObject("comando truncado"))?;
+            list.push(HdmvCommand::from_bytes(&bytes));
+            offset += 12;
+        }
+        objects.push((flags, list));
+    }
+    Ok(objects)
+}
+
+/// Replaces the commands of object `index`, keeping its flags and every
+/// other object (later objects move; object numbers do not change).
+pub fn replace_movie_object_commands(
+    movie_object: &[u8],
+    index: u16,
+    commands: &[HdmvCommand],
+) -> Result<Vec<u8>, BdmvError> {
+    let mut objects = movie_objects(movie_object)?;
+    let slot = objects
+        .get_mut(usize::from(index))
+        .ok_or(BdmvError::InvalidMovieObject("objeto inexistente"))?;
+    slot.1 = commands.to_vec();
+    let data_end =
+        44 + read_u32(movie_object, 40).ok_or(BdmvError::InvalidMovieObject("data_len"))? as usize;
+    let mut output = movie_object[..50].to_vec();
+    for (flags, list) in &objects {
+        output.extend_from_slice(&flags.to_be_bytes());
+        let count =
+            u16::try_from(list.len()).map_err(|_| BdmvError::InvalidMovieObject("comandos"))?;
+        output.extend_from_slice(&count.to_be_bytes());
+        for command in list {
+            output.extend_from_slice(&command.to_bytes());
+        }
+    }
+    let data_len =
+        u32::try_from(output.len() - 44).map_err(|_| BdmvError::InvalidMovieObject("data_len"))?;
+    output[40..44].copy_from_slice(&data_len.to_be_bytes());
+    // Anything after the objects block (extension data) is kept as is.
+    output.extend_from_slice(&movie_object[data_end..]);
+    Ok(output)
+}
+
 /// Appends a MovieObject that plays `playlist` and returns its object index.
 pub fn append_menu_movie_object(
     movie_object: &[u8],
@@ -696,8 +758,11 @@ pub fn append_menu_movie_object(
     Ok((output, num_objects))
 }
 
-/// Points First Playback and Top Menu to `object`.
-pub fn set_index_menu_object(index: &[u8], object: u16) -> Result<Vec<u8>, BdmvError> {
+/// Largest title number HDMV allows.
+pub const MAX_INDEX_TITLES: u16 = 999;
+
+/// `(indexes_start, indexes_len, num_titles)` of a validated index.bdmv.
+fn index_layout(index: &[u8]) -> Result<(usize, usize, u16), BdmvError> {
     if index.len() < 40 || (&index[..8] != b"INDX0200" && &index[..8] != b"INDX0100") {
         return Err(BdmvError::InvalidIndex("firma INDX0100/0200 ausente"));
     }
@@ -715,6 +780,72 @@ pub fn set_index_menu_object(index: &[u8], object: u16) -> Result<Vec<u8>, BdmvE
     if index_len < 26 + num_titles as usize * 12 {
         return Err(BdmvError::InvalidIndex("tabla de títulos truncada"));
     }
+    Ok((index_start, index_len, num_titles))
+}
+
+/// Number of titles in an index.bdmv.
+pub fn index_title_count(index: &[u8]) -> Result<u16, BdmvError> {
+    index_layout(index).map(|(_, _, titles)| titles)
+}
+
+/// Appends one HDMV **Movie** title per object (title numbers follow the
+/// existing ones) and returns the new index and the first new title number.
+/// An episode started with `JumpTitle` plays as a movie title, so players
+/// keep fast-forward and rewind (a PS4 blocks them inside the interactive
+/// Top Menu title, where `JumpObject` would leave it).
+pub fn append_index_movie_titles(
+    index: &[u8],
+    objects: &[u16],
+) -> Result<(Vec<u8>, u16), BdmvError> {
+    let (index_start, index_len, num_titles) = index_layout(index)?;
+    let total = usize::from(num_titles) + objects.len();
+    if total > usize::from(MAX_INDEX_TITLES) {
+        return Err(BdmvError::InvalidIndex("más de 999 títulos"));
+    }
+    let insert_at = index_start + 4 + 26 + usize::from(num_titles) * 12;
+    let mut entries = Vec::with_capacity(objects.len() * 12);
+    for object in objects {
+        let mut entry = [0u8; 12];
+        // object_type 1 (HDMV), access_type 0; playback type 0 (movie).
+        entry[0] = 0x40;
+        entry[6..8].copy_from_slice(&object.to_be_bytes());
+        entries.extend_from_slice(&entry);
+    }
+    let mut output = Vec::with_capacity(index.len() + entries.len());
+    output.extend_from_slice(&index[..insert_at]);
+    output.extend_from_slice(&entries);
+    output.extend_from_slice(&index[insert_at..]);
+    let grown = u32::try_from(index_len + entries.len())
+        .map_err(|_| BdmvError::InvalidIndex("index_len"))?;
+    output[index_start..index_start + 4].copy_from_slice(&grown.to_be_bytes());
+    output[index_start + 4 + 24..index_start + 4 + 26]
+        .copy_from_slice(&(total as u16).to_be_bytes());
+    // Extension data (the AVCHD IDEX block) moves with the bytes after it.
+    let extension = read_u32(index, 12).unwrap_or(0) as usize;
+    if extension != 0 && extension >= insert_at {
+        let moved = u32::try_from(extension + entries.len())
+            .map_err(|_| BdmvError::InvalidIndex("extension_data_start"))?;
+        output[12..16].copy_from_slice(&moved.to_be_bytes());
+    }
+    Ok((output, num_titles + 1))
+}
+
+/// Points First Playback alone to `object` (an intro that ends in the menu
+/// the Top Menu entry keeps).
+pub fn set_index_first_play_object(index: &[u8], object: u16) -> Result<Vec<u8>, BdmvError> {
+    let (index_start, _, _) = index_layout(index)?;
+    let entry = index_start + 4;
+    if index[entry] >> 6 != 1 {
+        return Err(BdmvError::InvalidIndex("First Play no es HDMV"));
+    }
+    let mut output = index.to_vec();
+    output[entry + 6..entry + 8].copy_from_slice(&object.to_be_bytes());
+    Ok(output)
+}
+
+/// Points First Playback and Top Menu to `object`.
+pub fn set_index_menu_object(index: &[u8], object: u16) -> Result<Vec<u8>, BdmvError> {
+    let (index_start, _, _) = index_layout(index)?;
     let mut output = index.to_vec();
     for entry in [index_start + 4, index_start + 16] {
         let object_type = output[entry] >> 6;

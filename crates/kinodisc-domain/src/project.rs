@@ -140,6 +140,8 @@ pub enum VideoConfig {
 #[serde(rename_all = "camelCase")]
 pub struct DvdVideoConfig {
     pub profile: DvdProfile,
+    /// Not read since 1.3: the automatic profile follows the bitrate
+    /// (`kinodisc-plan`). Kept so projects keep their schema.
     pub auto_half_d1_after_ms: u64,
     pub max_video_kbps: u32,
     pub min_video_kbps: u32,
@@ -184,6 +186,11 @@ pub struct AvchdVideoConfig {
     pub vbv_bufsize_kbps: u32,
     pub keyint_frames: u16,
     pub slices: u8,
+    /// Seconds between key frames (1.3): 1 is the Blu-ray rule; 2 gives more
+    /// quality at low bitrates and a PS4 plays it on AVCHD discs; 3 is untested
+    /// on any player.
+    #[serde(default = "default_gop_seconds")]
+    pub gop_seconds: u8,
 }
 
 impl Default for AvchdVideoConfig {
@@ -200,6 +207,7 @@ impl Default for AvchdVideoConfig {
             vbv_bufsize_kbps: 24_000,
             keyint_frames: 24,
             slices: 4,
+            gop_seconds: 1,
         }
     }
 }
@@ -395,10 +403,12 @@ impl AvchdVideoConfig {
                     capacity.label()
                 ),
             ));
-        } else if !blu_ray && self.vbv_maxrate_kbps != 24_000 {
+        } else if !blu_ray && !matches!(self.vbv_maxrate_kbps, 18_000 | 24_000) {
+            // AVCHD on DVD media is encoded at 18 Mb/s at most; 24 000 is
+            // what projects before 1.3 stored.
             diagnostics.push(Diagnostic::warning(
                 "W_AVCHD_VBV_MAXRATE",
-                "Se normalizará el VBV maxrate a 24.000 kbps para compatibilidad AVCHD.",
+                "Se normalizará el VBV maxrate a 18.000 kbps para compatibilidad AVCHD.",
             ));
         }
         if blu_ray {
@@ -413,10 +423,10 @@ impl AvchdVideoConfig {
                 "E_AVCHD_VBV_BUFSIZE",
                 "El VBV bufsize AVCHD debe estar entre 1 y 24.000 kbps.",
             ));
-        } else if self.vbv_bufsize_kbps != 24_000 {
+        } else if !matches!(self.vbv_bufsize_kbps, 18_000 | 24_000) {
             diagnostics.push(Diagnostic::warning(
                 "W_AVCHD_VBV_BUFSIZE",
-                "Se normalizará el VBV bufsize a 24.000 kbps para compatibilidad AVCHD.",
+                "Se normalizará el VBV bufsize a 18.000 kbps para compatibilidad AVCHD.",
             ));
         }
         if self.slices != 4 {
@@ -434,6 +444,22 @@ impl AvchdVideoConfig {
             diagnostics.push(Diagnostic::warning(
                 "W_AVCHD_KEYINT",
                 "El GOP debería durar como máximo un segundo.",
+            ));
+        }
+        if !(1..=3).contains(&self.gop_seconds) {
+            diagnostics.push(Diagnostic::error(
+                "E_AVCHD_GOP_SECONDS",
+                "El GOP es de 1, 2 o 3 segundos.",
+            ));
+        } else if self.gop_seconds == 3 {
+            diagnostics.push(Diagnostic::warning(
+                "W_GOP_3_EXPERIMENTAL",
+                "GOP de 3 segundos: muy experimental, no se probó en ningún reproductor. Adelantar salta de a 3 segundos y un error de lectura dura más.",
+            ));
+        } else if self.gop_seconds == 2 && blu_ray {
+            diagnostics.push(Diagnostic::warning(
+                "W_LONG_GOP_BLU_RAY",
+                "GOP de 2 segundos en un Blu-ray: la norma pide 1 segundo. Se probó en una PS4 con discos AVCHD; otros reproductores de Blu-ray podrían rechazarlo.",
             ));
         }
         if !self.bluray_compat {
@@ -997,6 +1023,10 @@ pub struct FirstPlay {
     pub skippable: bool,
     #[serde(default)]
     pub encode_override: Option<EncodeOverride>,
+    /// Plays when the disc starts (1.3; older projects: yes). Off, the intro
+    /// plays only when the main menu's idle action is the intro.
+    #[serde(default = "default_true")]
+    pub at_start: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -1036,6 +1066,10 @@ pub struct BurnPreferences {
     pub eject: bool,
     #[serde(default = "default_true")]
     pub close_session: bool,
+}
+
+fn default_gop_seconds() -> u8 {
+    1
 }
 
 fn default_true() -> bool {
@@ -1362,25 +1396,43 @@ impl Project {
             }
         }
 
-        if !is_avchd {
-            if let Some(first_play) = &self.first_play {
-                if self.asset(first_play.asset).is_none() {
-                    diagnostics.push(Diagnostic::error(
-                        "E_FIRST_PLAY_ASSET_MISSING",
-                        "El First Play referencia un asset inexistente.",
-                    ));
-                }
-                if self.menu(first_play.target_menu).is_none() {
-                    diagnostics.push(Diagnostic::error(
-                        "E_FIRST_PLAY_MENU_MISSING",
-                        "El First Play apunta a un menú inexistente.",
-                    ));
-                }
+        // Since 1.3 AVCHD and Blu-ray play the intro too (an HD menu clip).
+        if let Some(first_play) = &self.first_play {
+            if self.asset(first_play.asset).is_none() {
+                diagnostics.push(Diagnostic::error(
+                    "E_FIRST_PLAY_ASSET_MISSING",
+                    "El First Play referencia un asset inexistente.",
+                ));
             }
-        } else if self.first_play.is_some() {
+            if self.menu(first_play.target_menu).is_none() {
+                diagnostics.push(Diagnostic::error(
+                    "E_FIRST_PLAY_MENU_MISSING",
+                    "El First Play apunta a un menú inexistente.",
+                ));
+            }
+        }
+        if self.first_play.is_none()
+            && self
+                .menu(self.root_menu)
+                .is_some_and(|menu| menu.timing.idle() == crate::menu::IdleAction::Intro)
+        {
             diagnostics.push(Diagnostic::warning(
-                "W_AVCHD_FIRST_PLAY_IGNORED",
-                "Blu-ray/AVCHD no usan First Play; el campo se ignora.",
+                "W_IDLE_INTRO_WITHOUT_INTRO",
+                "El menú principal debe pasar la intro si nadie elige nada, pero el proyecto no tiene intro: el menú espera.",
+            ));
+        }
+
+        if self
+            .first_play
+            .as_ref()
+            .is_some_and(|intro| !intro.at_start)
+            && self
+                .menu(self.root_menu)
+                .is_some_and(|menu| menu.timing.idle() != crate::menu::IdleAction::Intro)
+        {
+            diagnostics.push(Diagnostic::warning(
+                "W_INTRO_NEVER_PLAYS",
+                "La intro no se reproduce nunca: no está al poner el disco y el menú principal no la pasa si nadie elige nada.",
             ));
         }
 

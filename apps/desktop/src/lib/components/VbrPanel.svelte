@@ -293,7 +293,7 @@
               <span class="font-mono text-[11px] text-slate-500">
                 {planned ? `${planned.videoKbps.toLocaleString(i18n.locale)} kbps` : t("sin plan")}
               </span>
-              <span class="font-mono text-[11px] text-slate-600">
+              <span class="font-mono text-[11px] text-slate-500">
                 {formatDuration(projectStore.episodeEffectiveDuration(episode))}
               </span>
               <div class="flex rounded-md border border-slate-800 bg-slate-900 p-0.5">

@@ -776,6 +776,53 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// Turns the moving thumbnails of every episode card on or off, on every
+/// menu page (the editor's «Animar todas las miniaturas»). A card loops
+/// `loop_ms` of its episode from the thumbnail frame. Turning them on also
+/// turns on the page's motion, keeping its duration (the root menu's idle
+/// wait). Returns how many buttons changed.
+pub fn set_all_thumbnail_motion(
+    project: &mut kinodisc_domain::Project,
+    enabled: bool,
+    loop_ms: u64,
+) -> usize {
+    let mut changed = 0;
+    for menu in &mut project.menus {
+        let mut any = false;
+        for button in &mut menu.buttons {
+            let Some(thumbnail) = &button.thumbnail else {
+                continue;
+            };
+            if enabled {
+                let fps = thumbnail.fps;
+                let start_ms = if fps.num > 0 {
+                    thumbnail.in_frame * 1000 * u64::from(fps.den) / u64::from(fps.num)
+                } else {
+                    0
+                };
+                button.motion_preview = Some(kinodisc_domain::ButtonMotionConfig {
+                    source_start_ms: start_ms,
+                    loop_duration_ms: loop_ms.clamp(1_000, 60_000),
+                });
+                any = true;
+                changed += 1;
+            } else if button.motion_preview.take().is_some() {
+                changed += 1;
+            }
+        }
+        if any && menu.motion_config.is_none() {
+            menu.motion_config = Some(kinodisc_domain::MotionMenuConfig {
+                duration_ms: menu.timing.duration_ms.max(1_000),
+                loop_enabled: true,
+                fade_in_ms: 500,
+                fade_out_ms: 500,
+                audio_volume: 1.0,
+            });
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -110,7 +110,7 @@ button:not(:disabled):active {
     @apply mb-1 block text-[12px] text-slate-400;
   }
   .ui-hint {
-    @apply text-[12px] leading-5 text-slate-500;
+    @apply text-[12px] leading-5 text-slate-400;
   }
   .ui-input {
     @apply h-8 w-full min-w-0 rounded-md border border-slate-700 bg-slate-950 px-2.5 text-[13px] text-slate-100 outline-none placeholder:text-slate-500 hover:border-slate-600 focus:border-cyan-500;

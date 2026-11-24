@@ -209,7 +209,7 @@
         <button
           type="button"
           onclick={() => (index += 1)}
-          class="rounded-lg bg-cyan-500 px-3 py-1 text-[12px] font-bold text-slate-950 transition hover:bg-cyan-400"
+          class="rounded-lg bg-cyan-500 px-3 py-1 text-[12px] font-bold text-[#ffffff] transition hover:bg-cyan-600"
         >
           {t("Siguiente")}
         </button>

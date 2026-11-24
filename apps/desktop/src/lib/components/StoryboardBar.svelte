@@ -133,7 +133,7 @@
           >
             <Icon name="menu" size={14} class="text-slate-400" />
             <span class="truncate">{menu.name}</span>
-            <span class="ml-auto shrink-0 text-[11px] text-slate-500">{menuRoleShort(menu)}</span>
+            <span class="ml-auto shrink-0 text-[11px] text-slate-400">{menuRoleShort(menu)}</span>
           </button>
           {#if menu.id !== project?.rootMenu}
             <button
@@ -162,6 +162,8 @@
     </div>
     <div class="flex min-h-0 flex-1 items-stretch gap-2 overflow-x-auto px-3 pb-2" role="list">
       {#if episodes.length === 0}
+        <!-- A list only holds list items (axe: aria-required-children). -->
+        <div role="listitem" class="flex min-w-[280px] flex-1">
         <button
           type="button"
           onclick={addEpisode}
@@ -169,6 +171,7 @@
         >
           <Icon name="add" size={16} />{t("La secuencia está vacía. Importa un vídeo y añádelo como episodio.")}
         </button>
+        </div>
       {:else}
         {#each episodes as episode, index (episode.id)}
           {@const selected = projectStore.selectedEpisode?.id === episode.id}
@@ -207,7 +210,7 @@
                 {#if preview}
                   <img src={preview} alt="" class="h-full w-full bg-black object-contain" draggable="false" />
                 {:else}
-                  <div class="flex h-full items-center justify-center text-slate-600"><Icon name="film" size={18} /></div>
+                  <div class="flex h-full items-center justify-center text-slate-500"><Icon name="film" size={18} /></div>
                 {/if}
                 <span class="absolute left-1 top-1 rounded bg-black/70 px-1 font-mono text-[11px] text-[#fff]">{episode.number}</span>
                 <span class="absolute bottom-1 right-1 rounded bg-black/70 px-1 font-mono text-[11px] text-[#fff]">{formatDuration(duration)}</span>
@@ -226,6 +229,7 @@
             ><Icon name="close" size={13} /></button>
           </div>
         {/each}
+        <div role="listitem" class="flex shrink-0">
         <button
           type="button"
           onclick={addEpisode}
@@ -234,6 +238,7 @@
         >
           <Icon name="add" size={16} />{t("Añadir")}
         </button>
+        </div>
       {/if}
     </div>
   </div>

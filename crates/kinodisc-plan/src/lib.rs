@@ -5,9 +5,9 @@
 //! reserve -> MPEG-PS/NAV overhead -> episode audio/subtitles -> video bitrate.
 
 use kinodisc_domain::{
-    AssetId, AuthoringMode, AvchdPlanDetails, AvchdVideoConfig, Diagnostic, DiscCapacity,
-    DvdProfile, EncodingPriority, Episode, EpisodeId, FrameRate, LayerBreakMode, MediaAsset,
-    MediaProbe, Project, VideoConfig,
+    AssetId, AuthoringMode, AvchdPlanDetails, AvchdResolution, AvchdVideoConfig, Diagnostic,
+    DiscCapacity, DvdProfile, EncodingPriority, Episode, EpisodeId, FrameRate, LayerBreakMode,
+    MediaAsset, MediaProbe, Project, VideoConfig,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -26,6 +26,11 @@ const MENU_OVERHEAD_BYTES: u64 = 2_000_000;
 const INTRO_OVERHEAD_BYTES: u64 = 1_000_000;
 const IFO_BYTES: u64 = 2 * 1024 * 1024;
 const D1_MIN_KBPS: u32 = 2_500;
+/// Below this the automatic profile picks Half-D1. Measured in 1.3 (two-pass
+/// MPEG-2, SSIM after upscaling, NTSC and PAL): on film Half-D1 wins below
+/// about 1.8 Mb/s (0.17 bits per pixel) and loses above it. On animation D1
+/// won at every bitrate tested, but the plan cannot tell the two apart.
+const AUTO_HALF_D1_BELOW_KBPS: u32 = 1_800;
 const HALF_D1_MIN_KBPS: u32 = 1_200;
 const DVD_MAX_TOTAL_KBPS: u32 = 10_080;
 
@@ -149,8 +154,9 @@ fn calculate_plan_for_format(
     if let VideoConfig::Avchd(config) = &project.disc.video {
         return calculate_avchd_plan(project, probes, config);
     }
-    let (requested_profile, auto_half_d1_after_ms) = match &project.disc.video {
-        VideoConfig::Dvd(config) => (config.profile, config.auto_half_d1_after_ms),
+    // `auto_half_d1_after_ms` is no longer read: the bitrate decides (1.3).
+    let requested_profile = match &project.disc.video {
+        VideoConfig::Dvd(config) => config.profile,
         VideoConfig::Avchd(_) => return Err(PlanError::UnsupportedMode),
     };
     if project.episodes.is_empty() {
@@ -263,8 +269,8 @@ fn calculate_plan_for_format(
     }
 
     let raw_video_kbps = (video_budget_bytes as u128 * 8 / total_duration_ms as u128) as u64;
-    let auto_half_d1 = requested_profile == DvdProfile::Auto
-        && (total_duration_ms > auto_half_d1_after_ms || raw_video_kbps < D1_MIN_KBPS as u64);
+    let auto_half_d1 =
+        requested_profile == DvdProfile::Auto && raw_video_kbps < AUTO_HALF_D1_BELOW_KBPS as u64;
     let profile = match requested_profile {
         DvdProfile::Auto => {
             if auto_half_d1 {
@@ -277,6 +283,9 @@ fn calculate_plan_for_format(
     };
     let min_video_kbps = match profile {
         DvdProfile::HalfD1 => HALF_D1_MIN_KBPS,
+        // D1 chosen by the automatic profile is better than Half-D1 down to
+        // the switch point, whatever the budget's minimum says.
+        DvdProfile::D1 if requested_profile == DvdProfile::Auto => AUTO_HALF_D1_BELOW_KBPS,
         DvdProfile::D1 | DvdProfile::Auto => policy.min_video_kbps.max(D1_MIN_KBPS),
     };
     let max_video_kbps = policy.max_video_kbps.max(1);
@@ -286,8 +295,8 @@ fn calculate_plan_for_format(
         warnings.push(Diagnostic::warning(
             "W_HALF_D1_AUTO",
             format!(
-                "Se activó Half-D1 automáticamente: duración {} ms y bitrate calculado {} kbps.",
-                total_duration_ms, raw_video_kbps
+                "Se activó Half-D1 automáticamente: con {} kbps de vídeo, media resolución se ve mejor que la completa (por debajo de {} kbps).",
+                raw_video_kbps, AUTO_HALF_D1_BELOW_KBPS
             ),
         ));
     }
@@ -457,11 +466,23 @@ fn calculate_avchd_plan(
     let target_bytes = ((capacity_base - header_margin) as u128
         * project.budget.target_fill_ppm as u128
         / 1_000_000) as u64;
-    // A 60 s menu loop measured 2.4 MB on a 480i disc (QA 1.2.4).
+    // The GOP warnings live in the video config; the app shows the plan's.
+    let mut warnings: Vec<Diagnostic> = config
+        .validate_for_capacity(capacity)
+        .into_iter()
+        .filter(|diagnostic| {
+            matches!(
+                diagnostic.code.as_str(),
+                "W_GOP_3_EXPERIMENTAL" | "W_LONG_GOP_BLU_RAY"
+            )
+        })
+        .collect();
+    // A 60 s menu loop measured 2.4 MB on a 480i disc (QA 1.2.4). The intro
+    // (1.3) is one more menu clip, as long as its video.
     let menus_bytes = project.menus.len() as u64 * 3_000_000;
-    let target_bytes = target_bytes.saturating_sub(menus_bytes);
+    let intro_bytes = estimate_hd_intro_bytes(project, probes, config, &mut warnings);
+    let target_bytes = target_bytes.saturating_sub(menus_bytes.saturating_add(intro_bytes));
 
-    let mut warnings = Vec::new();
     let has_unsupported_avchd_subtitles = project.episodes.iter().any(|episode| {
         episode
             .subtitles
@@ -690,7 +711,7 @@ fn calculate_avchd_plan(
         capacity_bytes: nominal,
         header_margin_bytes: header_margin,
         target_bytes,
-        intro_bytes: 0,
+        intro_bytes,
         menus_bytes,
         episode_audio_bytes: audio_total,
         subtitle_bytes: 0,
@@ -701,7 +722,9 @@ fn calculate_avchd_plan(
         profile: DvdProfile::D1,
         layer_break_sector: dvd9_layer_break_sector(
             capacity,
-            estimated_total.saturating_add(menus_bytes),
+            estimated_total
+                .saturating_add(menus_bytes)
+                .saturating_add(intro_bytes),
         ),
         layer_break_mode: layer_break_mode(capacity, project.disc.layer_break_mode),
         per_episode,
@@ -820,6 +843,47 @@ fn estimate_intro_bytes(
     bytes_for(duration_ms, INTRO_VIDEO_KBPS + audio_kbps).saturating_add(INTRO_OVERHEAD_BYTES)
 }
 
+/// The HD intro: a menu clip (x264 CRF 23, capped at the disc maximum) plus
+/// stereo AC-3 at 192 kbps. The video rate is a generous average for live
+/// footage at each resolution.
+fn estimate_hd_intro_bytes(
+    project: &Project,
+    probes: &HashMap<AssetId, MediaProbe>,
+    config: &AvchdVideoConfig,
+    warnings: &mut Vec<Diagnostic>,
+) -> u64 {
+    let Some(first_play) = &project.first_play else {
+        return 0;
+    };
+    let Some(asset) = project.asset(first_play.asset) else {
+        warnings.push(Diagnostic::warning(
+            "W_INTRO_ASSET_MISSING",
+            "El First Play referencia un asset inexistente; no se reserva espacio para la intro.",
+        ));
+        return 0;
+    };
+    let probe = probe_for(asset, probes);
+    let fps = probe
+        .video
+        .as_ref()
+        .map(|video| video.frame_rate)
+        .filter(|rate| rate.is_valid())
+        .unwrap_or(config.frame_rate);
+    let Some(duration_ms) = duration_from_probe(probe, first_play.trim, fps) else {
+        warnings.push(Diagnostic::warning(
+            "W_INTRO_DURATION",
+            "No se pudo determinar la duración de la intro; no se reserva espacio.",
+        ));
+        return 0;
+    };
+    let video_kbps: u32 = match config.resolution {
+        AvchdResolution::Sd480i | AvchdResolution::Sd576i => 3_000,
+        AvchdResolution::R720p => 6_000,
+        _ => 10_000,
+    };
+    bytes_for(duration_ms, video_kbps + 192).saturating_add(INTRO_OVERHEAD_BYTES)
+}
+
 fn bytes_for(duration_ms: u64, kbps: u32) -> u64 {
     (duration_ms as u128 * kbps as u128 / 8) as u64
 }
@@ -849,8 +913,26 @@ fn priority_video_kbps(episodes: &[EpisodeInput], average_kbps: u32, max_kbps: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kinodisc_project::load_project;
     use std::path::PathBuf;
+
+    /// Windows sometimes holds a fixture for a moment (antivirus, indexer)
+    /// and the read fails with PermissionDenied: a flaky gate in 1.3 QA.
+    fn load_project(
+        path: PathBuf,
+    ) -> Result<kinodisc_domain::Project, kinodisc_project::ProjectError> {
+        let mut tries = 0;
+        loop {
+            match kinodisc_project::load_project(&path) {
+                Err(kinodisc_project::ProjectError::Io(error))
+                    if error.kind() == std::io::ErrorKind::PermissionDenied && tries < 10 =>
+                {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                result => return result,
+            }
+        }
+    }
 
     fn fixture() -> Project {
         let path =
@@ -875,13 +957,25 @@ mod tests {
     }
 
     #[test]
-    fn four_hours_switch_to_half_d1() {
+    fn half_d1_follows_the_bitrate_not_the_duration() {
+        // Four hours on a DVD-5 still leave about 2.3 Mb/s: full D1 measured
+        // better there, so the old duration rule (2.5 h) no longer applies.
         let mut project = fixture();
         set_duration(&mut project, 14_400_000);
         let plan = calculate_bitrate_plan(&project, &HashMap::new()).expect("plan");
-        assert!(plan.feasible);
+        assert!(plan.feasible, "{:?}", plan.warnings);
+        assert_eq!(plan.profile, DvdProfile::D1);
+        assert!(plan.video_kbps >= AUTO_HALF_D1_BELOW_KBPS);
+        assert!(!plan
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "W_HALF_D1_AUTO"));
+        // Six hours fall below the switch point.
+        set_duration(&mut project, 21_600_000);
+        let plan = calculate_bitrate_plan(&project, &HashMap::new()).expect("plan");
+        assert!(plan.feasible, "{:?}", plan.warnings);
         assert_eq!(plan.profile, DvdProfile::HalfD1);
-        assert!(plan.video_kbps > 1_200 && plan.video_kbps < 2_500);
+        assert!(plan.video_kbps > 1_200 && plan.video_kbps < AUTO_HALF_D1_BELOW_KBPS);
         assert!(plan
             .warnings
             .iter()

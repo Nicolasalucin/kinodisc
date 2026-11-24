@@ -99,8 +99,9 @@ export async function drawMenuItems(
   context: CanvasRenderingContext2D,
   menu: Menu_Serialize,
   imageUrls: Record<string, string>,
+  keep: (item: Menu_Serialize["items"][number]) => boolean = () => true,
 ): Promise<void> {
-  for (const item of menu.items) {
+  for (const item of menu.items.filter(keep)) {
     const rect = itemRect(item);
     if (rect.w <= 0 || rect.h <= 0) continue;
     if (item.kind === "text") {

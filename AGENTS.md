@@ -520,6 +520,63 @@ Smart Render Cache v2:
 - Developer tool: `cargo run -p kinodisc-iso --example bdmv_iso -- <folder>
   <out.iso> <label>` wraps a BDMV folder with the same UDF writer.
 
+### 23. Kinodisc 1.3 additions
+
+- **x264 (AVCHD/Blu-ray, CPU)**: two passes (`passlog`, `EncodePass`), `bf 3`
+  with `b-pyramid=strict`, GOP `gop_frames` = round(fps) × `gop_seconds`
+  (1 default, 2 tested on a PS4, 3 very experimental), `ref=4` at 1080 lines,
+  progressive sources on 480i/576i coded with `fake-interlaced=1:pic-struct=1`
+  (x264 writes pic_struct 0), BT.601 tags on SD, 18 Mb/s cap on DVD media.
+  Section 7's "DTS = PTS" rule is lifted: a PS4 plays B-frames. `ContentType`
+  only sets `-tune` (animation/grain); `aq-mode=3` and an automatic `hqdn3d`
+  measured worse and must not come back without new measurements.
+- **DVD Half-D1**: the automatic profile switches below
+  `AUTO_HALF_D1_BELOW_KBPS` (1800, measured); `auto_half_d1_after_ms` is no
+  longer read.
+- **HD navigation, measured on a PS4** (keep these):
+  - index.bdmv has **one title** (title 1 = the whole series). A 21-title
+    AVCHD index is "Unknown disc".
+  - First Play stays on the root menu object. The intro plays from the root
+    object once (`INTRO_SEEN_GPR` 7, `CMP_LT` + `JumpObject(intro)`); with
+    First Play on the intro object the PS4 refused fast-forward everywhere.
+  - Episodes with `post_action = NextEpisode` (the default for new episodes)
+    play title 1 from their mark (`SetGPR(0, mark); JumpTitle(1)`): seekable,
+    next chapter reaches the next episode. Other episodes `JumpObject` to
+    their own range playlist object inside the Top Menu title: not seekable
+    on a PS4. Sending title 1 on to an episode object (compare a GPR, then
+    `JumpObject`) landed in the wrong episode, so it is not done.
+  - Title 1 ends with `JumpObject(root)` (`wire_title_one`); a PS4 ignores it
+    and goes to its home screen.
+  - The HD idle wait (`HD_IDLE_MIN_MS`, 60 s) counts from when the menu
+    appears; HDMV cannot see the remote.
+- **Domain**: `MenuTiming.idle_action` (`Wait`, `PlayAll`, `Intro`; read
+  through `MenuTiming::idle()`, which maps the old `auto_play`),
+  `FirstPlay.at_start` (serde default true), `AvchdVideoConfig.gop_seconds`.
+  Diagnostics: `W_IDLE_INTRO_WITHOUT_INTRO`, `W_INTRO_NEVER_PLAYS`,
+  `W_GOP_3_EXPERIMENTAL`, `W_LONG_GOP_BLU_RAY`, `E_AVCHD_GOP_SECONDS`.
+- **CLI `project`** (`kinodisc-cli/src/project_cmd.rs`): `new`, `add`, `menu`,
+  `intro`, `subtitles`, `episodes`, `gop`, `show`. It uses
+  `kinodisc-project::new` and `::import`, which mirror the editor's
+  `addAsset`/`addEpisodeFromAsset`/`addEpisodeSubtitleTrack`; keep them in
+  sync. Every write validates first.
+- **Templates** `EpisodeList`, `SeasonIndex`, `CompactIndex` (12/18/24 a
+  page); page buttons sit inside the 5 % title-safe area.
+- **Moving thumbnails**: over a still background, a menu's shapes and
+  pictures go into the background picture and only texts go on the overlay
+  (`compose.rs` and `exportMenu.ts`): the overlay is drawn above the cards,
+  and a template's opaque `tpl:bg` there hid them. DVD cards read their own
+  seconds (`-ss`/`-t` per input), are scaled before `loop` and repeat a
+  finite number of times; never loop a whole episode or loop forever (the
+  menu never finished, or hung at its end). The motion-menu stage has a
+  stall watchdog (`MOTION_MENU_STALL`, no `-progress` line for 180 s) and
+  one retry.
+- **Try the options** (`kinodisc-render::sample::compare_options`): four
+  encodes of the current settings make the quality curve; SSIM against the
+  achieved bitrate; savings within ±75 % and 0 under 0.15 dB.
+- `theme.css`: slate-500 is #8a8d95 (dark) / #63676f (light) and the dark
+  cyan-500 is #2f6fe0, for 4.5:1 text contrast (white on the accent too);
+  muted text uses slate-500, not slate-600.
+
 ### 13. Localization
 
 - Spanish is the source language; English must stay complete. Run

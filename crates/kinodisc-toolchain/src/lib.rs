@@ -153,6 +153,9 @@ pub enum EncoderPreference {
     CpuOnly,
     /// x264 `slow`: about twice the time of `medium`, best quality per byte.
     CpuSlow,
+    /// x264 `slower`: about a third more time than `slow` for a little more
+    /// quality (bluray-compat caps its extra refs and B-frames).
+    CpuSlower,
     Prefer(HardwareEncoder),
 }
 
@@ -163,7 +166,45 @@ impl EncoderPreference {
         match self {
             Self::CpuFast => "fast",
             Self::CpuSlow => "slow",
+            Self::CpuSlower => "slower",
             Self::Auto | Self::CpuOnly | Self::Prefer(_) => "medium",
+        }
+    }
+}
+
+/// What the video is, to tune the encoder for it. It changes the picture
+/// (not the disc size), so it is part of the episode cache key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ContentType {
+    /// Live action: x264 defaults. Measured in 1.3 (SSIM/VMAF, 480i to
+    /// 1080p): `aq-mode=3` lost 0.3–0.8 dB against them, so it is not used.
+    #[default]
+    Film,
+    /// Cartoons and anime: flat areas and sharp lines (x264 `animation`
+    /// tune). A light `hqdn3d` before encoding was measured and dropped:
+    /// it lost up to 1.5 dB at 720p and 1080p.
+    Animation,
+    /// Grainy or noisy home video and film: keep the grain (x264 `grain`).
+    Grain,
+}
+
+impl ContentType {
+    /// The x264 `-tune`, if any.
+    pub const fn x264_tune(self) -> Option<&'static str> {
+        match self {
+            Self::Film => None,
+            Self::Animation => Some("animation"),
+            Self::Grain => Some("grain"),
+        }
+    }
+
+    /// Short name for cache keys and the CLI.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Film => "film",
+            Self::Animation => "animation",
+            Self::Grain => "grain",
         }
     }
 }
@@ -850,9 +891,10 @@ pub fn resolve_hardware_encoder(
     capabilities: &EncoderCapabilities,
 ) -> Option<HardwareEncoder> {
     match preference {
-        EncoderPreference::CpuFast | EncoderPreference::CpuOnly | EncoderPreference::CpuSlow => {
-            None
-        }
+        EncoderPreference::CpuFast
+        | EncoderPreference::CpuOnly
+        | EncoderPreference::CpuSlow
+        | EncoderPreference::CpuSlower => None,
         EncoderPreference::Auto => capabilities.h264.first().copied(),
         EncoderPreference::Prefer(encoder) => {
             capabilities.h264.contains(&encoder).then_some(encoder)

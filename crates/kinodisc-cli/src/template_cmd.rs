@@ -27,7 +27,7 @@ fn cli_name(id: MenuTemplateId) -> String {
 }
 
 /// Accepts `multi-page-tv-grid`, `multiPageTvGrid` or any case of either.
-fn parse_template(value: &str) -> Option<MenuTemplateId> {
+pub(crate) fn parse_template(value: &str) -> Option<MenuTemplateId> {
     let wanted: String = value
         .chars()
         .filter(|character| character.is_ascii_alphanumeric())

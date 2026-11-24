@@ -64,7 +64,13 @@ export const commands = {
 	 *  Encodes 10 s of an episode exactly as the disc will (bitrate from the
 	 *  plan) and measures it against the source. Only the latest sample is kept.
 	 */
-	renderQualitySample: (project: Project_Deserialize, episodeId: string, atMs: number, videoKbps: number, encoder: EncoderPreference | null) => typedError<QualitySample, string>(__TAURI_INVOKE("render_quality_sample", { project, episodeId, atMs, videoKbps, encoder })),
+	renderQualitySample: (project: Project_Deserialize, episodeId: string, atMs: number, videoKbps: number, encoder: EncoderPreference | null, content: ContentType | null) => typedError<QualitySample, string>(__TAURI_INVOKE("render_quality_sample", { project, episodeId, atMs, videoKbps, encoder, content })),
+	/**
+	 *  Encodes the same 10 s with the current settings at four bitrates and
+	 *  with each option, and estimates what each option saves. Only the latest
+	 *  comparison is kept.
+	 */
+	renderCompareOptions: (project: Project_Deserialize, episodeId: string, atMs: number, videoKbps: number, encoder: EncoderPreference | null, content: ContentType | null, options: SampleOption[]) => typedError<OptionComparison, string>(__TAURI_INVOKE("render_compare_options", { project, episodeId, atMs, videoKbps, encoder, content, options })),
 	/**
 	 *  Extrae un fotograma exacto con FFmpeg. Sin `output_png` el fichero se
 	 *  escribe en el directorio temporal de Kinodisc y se devuelve su ruta.
@@ -118,7 +124,7 @@ export const commands = {
 	 */
 	projectSplit: (project: Project_Deserialize, strategy: SplitStrategy) => typedError<SplitResult_Serialize, string>(__TAURI_INVOKE("project_split", { project, strategy })),
 	burnListDevices: () => typedError<OpticalDevice[], string>(__TAURI_INVOKE("burn_list_devices")),
-	renderStart: (project: Project_Deserialize, outputDir: string, hardwareEncoding: EncoderPreference, isoName: string | null, cpuUsage: CpuUsage | null, channel: Channel<JobEvent_Deserialize>) => typedError<RenderOutcome_Serialize, string>(__TAURI_INVOKE("render_start", { project, outputDir, hardwareEncoding, isoName, cpuUsage, channel })),
+	renderStart: (project: Project_Deserialize, outputDir: string, hardwareEncoding: EncoderPreference, isoName: string | null, cpuUsage: CpuUsage | null, content: ContentType | null, channel: Channel<JobEvent_Deserialize>) => typedError<RenderOutcome_Serialize, string>(__TAURI_INVOKE("render_start", { project, outputDir, hardwareEncoding, isoName, cpuUsage, content, channel })),
 	/**
 	 *  Cancela la generación activa. Los procesos FFmpeg/herramientas se crean con
 	 *  `kill_on_drop` y la bandera compartida detiene la escritura UDF, por lo que
@@ -306,7 +312,9 @@ export type AvchdPlanDetails = {
 
 export type AvchdResolution = "1080p" | "1080i" | "720p" | "480i" | "576i";
 
-export type AvchdVideoConfig = {
+export type AvchdVideoConfig = AvchdVideoConfig_Serialize | AvchdVideoConfig_Deserialize;
+
+export type AvchdVideoConfig_Deserialize = {
 	resolution: AvchdResolution,
 	frameRate: FrameRate,
 	level: H264Level,
@@ -315,6 +323,29 @@ export type AvchdVideoConfig = {
 	vbvBufsizeKbps: number,
 	keyintFrames: number,
 	slices: number,
+	/**
+	 *  Seconds between key frames (1.3): 1 is the Blu-ray rule; 2 gives more
+	 *  quality at low bitrates and a PS4 plays it on AVCHD discs; 3 is untested
+	 *  on any player.
+	 */
+	gopSeconds?: number,
+};
+
+export type AvchdVideoConfig_Serialize = {
+	resolution: AvchdResolution,
+	frameRate: FrameRate,
+	level: H264Level,
+	blurayCompat: boolean,
+	vbvMaxrateKbps: number,
+	vbvBufsizeKbps: number,
+	keyintFrames: number,
+	slices: number,
+	/**
+	 *  Seconds between key frames (1.3): 1 is the Blu-ray rule; 2 gives more
+	 *  quality at low bitrates and a PS4 plays it on AVCHD discs; 3 is untested
+	 *  on any player.
+	 */
+	gopSeconds: number,
 };
 
 export type BitratePlan = BitratePlan_Serialize | BitratePlan_Deserialize;
@@ -537,6 +568,25 @@ export type Chapter_Serialize = {
 export type CheckStatus = "pass" | "warn" | "fail" | "skipped";
 
 /**
+ *  What the video is, to tune the encoder for it. It changes the picture
+ *  (not the disc size), so it is part of the episode cache key.
+ */
+export type ContentType = 
+/**
+ *  Live action: x264 defaults. Measured in 1.3 (SSIM/VMAF, 480i to
+ *  1080p): `aq-mode=3` lost 0.3–0.8 dB against them, so it is not used.
+ */
+"film" | 
+/**
+ *  Cartoons and anime: flat areas and sharp lines (x264 `animation`
+ *  tune). A light `hqdn3d` before encoding was measured and dropped:
+ *  it lost up to 1.5 dB at 720p and 1080p.
+ */
+"animation" | 
+/**  Grainy or noisy home video and film: keep the grain (x264 `grain`). */
+"grain";
+
+/**
  *  How much of the processor a render may take. It never changes the disc:
  *  only how many episodes encode at the same time, how many threads each
  *  encoder gets and the priority of the encoder processes.
@@ -679,6 +729,10 @@ export type DvdVideoConfig = DvdVideoConfig_Serialize | DvdVideoConfig_Deseriali
 
 export type DvdVideoConfig_Deserialize = {
 	profile: DvdProfile,
+	/**
+	 *  Not read since 1.3: the automatic profile follows the bitrate
+	 *  (`kinodisc-plan`). Kept so projects keep their schema.
+	 */
 	autoHalfD1AfterMs: number,
 	maxVideoKbps: number,
 	minVideoKbps: number,
@@ -690,6 +744,10 @@ export type DvdVideoConfig_Deserialize = {
 
 export type DvdVideoConfig_Serialize = {
 	profile: DvdProfile,
+	/**
+	 *  Not read since 1.3: the automatic profile follows the bitrate
+	 *  (`kinodisc-plan`). Kept so projects keep their schema.
+	 */
 	autoHalfD1AfterMs: number,
 	maxVideoKbps: number,
 	minVideoKbps: number,
@@ -735,7 +793,12 @@ export type EncoderPreference =
 /**  x264 `medium` (the historical "CPU only" choice). */
 "cpuOnly" | 
 /**  x264 `slow`: about twice the time of `medium`, best quality per byte. */
-"cpuSlow" | { prefer: HardwareEncoder };
+"cpuSlow" | 
+/**
+ *  x264 `slower`: about a third more time than `slow` for a little more
+ *  quality (bluray-compat caps its extra refs and B-frames).
+ */
+"cpuSlower" | { prefer: HardwareEncoder };
 
 export type EncodingPriority = "low" | "medium" | "high";
 
@@ -875,6 +938,11 @@ export type FirstPlay_Deserialize = {
 	targetMenu: MenuId,
 	skippable?: boolean,
 	encodeOverride?: EncodeOverride_Deserialize | null,
+	/**
+	 *  Plays when the disc starts (1.3; older projects: yes). Off, the intro
+	 *  plays only when the main menu's idle action is the intro.
+	 */
+	atStart?: boolean,
 };
 
 export type FirstPlay_Serialize = {
@@ -884,6 +952,11 @@ export type FirstPlay_Serialize = {
 	targetMenu: MenuId,
 	skippable: boolean,
 	encodeOverride: EncodeOverride_Serialize | null,
+	/**
+	 *  Plays when the disc starts (1.3; older projects: yes). Off, the intro
+	 *  plays only when the main menu's idle action is the intro.
+	 */
+	atStart: boolean,
 };
 
 export type FolderExport = {
@@ -912,6 +985,18 @@ export type FrameRate = {
 export type H264Level = "level41" | "level42";
 
 export type HardwareEncoder = "nvencH264" | "qsvH264" | "vaapiH264" | "amfH264" | "videoToolboxH264";
+
+/**
+ *  What a root menu does once it has been shown for its whole duration with
+ *  no choice.
+ */
+export type IdleAction = 
+/**  Keep showing the menu. */
+"wait" | 
+/**  Start Play All. */
+"playAll" | 
+/**  Play the intro (first-play video) and come back to the menu. */
+"intro";
 
 export type ImageItem = ImageItem_Serialize | ImageItem_Deserialize;
 
@@ -1227,7 +1312,9 @@ export type MenuScaleMode = "cover" | "contain" | "stretch";
  *  Visual menu definition. Rasterized layers are produced by the frontend and
  *  sent to the backend separately in `MenuCompileRequest`.
  */
-export type MenuTemplateId = "cinemaDark" | "multiPageTvGrid" | "classicCriterion" | "retroCrt" | "minimalist" | "wedding" | "birthday" | "travel" | "sports" | "holidays" | "oldFilm" | "nature" | "documentary" | "kids" | "elegant";
+export type MenuTemplateId = "cinemaDark" | "multiPageTvGrid" | "classicCriterion" | "retroCrt" | "minimalist" | "wedding" | "birthday" | "travel" | "sports" | "holidays" | "oldFilm" | "nature" | "documentary" | "kids" | "elegant" | 
+/**  Text lists for long series (1.3): 12, 18 and 24 episodes a page. */
+"episodeList" | "seasonIndex" | "compactIndex";
 
 export type MenuTemplateInfo = {
 	id: MenuTemplateId,
@@ -1254,20 +1341,30 @@ export type MenuTiming_Deserialize = {
 	durationMs: number,
 	loopPlayback: boolean,
 	/**
-	 *  Root menu only: when nobody chooses anything for `duration_ms`, the
-	 *  disc starts Play All instead of showing the menu again (DVD-Video).
+	 *  Before 1.3: root menu only, Play All when nobody chooses anything.
+	 *  Read through [`MenuTiming::idle`]; new projects write `idle_action`.
 	 */
 	autoPlay?: boolean,
+	/**
+	 *  Root menu only: what the disc does when nobody chooses anything for
+	 *  `duration_ms` (DVD-Video, AVCHD and Blu-ray).
+	 */
+	idleAction?: IdleAction,
 };
 
 export type MenuTiming_Serialize = {
 	durationMs: number,
 	loopPlayback: boolean,
 	/**
-	 *  Root menu only: when nobody chooses anything for `duration_ms`, the
-	 *  disc starts Play All instead of showing the menu again (DVD-Video).
+	 *  Before 1.3: root menu only, Play All when nobody chooses anything.
+	 *  Read through [`MenuTiming::idle`]; new projects write `idle_action`.
 	 */
 	autoPlay: boolean,
+	/**
+	 *  Root menu only: what the disc does when nobody chooses anything for
+	 *  `duration_ms` (DVD-Video, AVCHD and Blu-ray).
+	 */
+	idleAction: IdleAction,
 };
 
 export type MenuTransition = MenuTransition_Serialize | MenuTransition_Deserialize;
@@ -1425,6 +1522,29 @@ export type OpticalDevice = {
 	bus: string,
 	writable: boolean,
 	mediaPresent: boolean,
+};
+
+export type OptionComparison = {
+	videoKbps: number,
+	startMs: number | null,
+	seconds: number | null,
+	/**  SSIM (dB) of the current settings at the plan's bitrate. */
+	currentSsimDb: number | null,
+	originalPng: string,
+	currentPng: string,
+	options: OptionResult[],
+};
+
+export type OptionResult = {
+	option: SampleOption,
+	/**  SSIM against the source, in dB. */
+	ssimDb: number | null,
+	/**
+	 *  Bits saved for the same quality against the current settings, in
+	 *  percent (negative: it needs more bits), within ±`SAVING_LIMIT`.
+	 */
+	savingPercent: number | null,
+	discPng: string,
 };
 
 /**
@@ -1632,6 +1752,17 @@ export type RenderOutcome_Serialize = {
 };
 
 export type Rotation = "none" | "clockwise" | "half" | "counterClockwise";
+
+/**  One option to try on the sample, on top of the current settings. */
+export type SampleOption = 
+/**  The picture fix "reduce noise" at this level. */
+{ kind: "denoise"; level: Denoise } | 
+/**  AVCHD/Blu-ray: another content type. */
+{ kind: "content"; content: ContentType } | 
+/**  AVCHD/Blu-ray: another x264 preset (`fast`, `medium`, `slow`, `slower`). */
+{ kind: "preset"; encoder: EncoderPreference } | 
+/**  AVCHD/Blu-ray: seconds between key frames. */
+{ kind: "gop"; seconds: number };
 
 /**  Severity of a validation or planning diagnostic. */
 export type Severity = "info" | "warning" | "error";
@@ -2030,13 +2161,13 @@ export type VideoConfig_Deserialize = {
 	kind: "dvd",
 } & DvdVideoConfig_Deserialize | {
 	kind: "avchd",
-} & AvchdVideoConfig;
+} & AvchdVideoConfig_Deserialize;
 
 export type VideoConfig_Serialize = {
 	kind: "dvd",
 } & DvdVideoConfig_Serialize | {
 	kind: "avchd",
-} & AvchdVideoConfig;
+} & AvchdVideoConfig_Serialize;
 
 /**  Per-episode video handling. */
 export type VideoEncodeMode = 

@@ -297,7 +297,9 @@
 </script>
 
 <aside class="ui-panel w-[280px] shrink-0 border-r border-slate-800">
-  <div class="ui-tabs shrink-0" role="tablist">
+  <div class="ui-tabs shrink-0">
+    <!-- Only the tabs are in the tablist (axe: aria-required-children). -->
+    <div role="tablist" class="contents">
     {#each tabs as tab}
       <button
         type="button"
@@ -308,6 +310,7 @@
         <Icon name={tab.icon} size={15} />{t(tab.label)}
       </button>
     {/each}
+    </div>
     <button
       type="button"
       class="ml-auto"
@@ -365,12 +368,12 @@
             {@const episode = projectStore.episodeForAsset(asset.id)}
             {@const preview = projectStore.previewForAsset(asset.id)}
             <li class="group relative">
+              <!-- Double click adds it; the row's own buttons do it from the keyboard
+                   (a role=button row holding buttons is nested-interactive). -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div
                 class="ui-row pr-1"
-                role="button"
-                tabindex="0"
                 ondblclick={() => asset.kind === "video" && addEpisode(asset)}
-                onkeydown={(event) => event.key === "Enter" && asset.kind === "video" && addEpisode(asset)}
                 title={asset.kind === "video" ? t("Doble clic para añadirlo como episodio") : asset.displayName}
               >
                 <div class="flex h-9 w-14 shrink-0 items-center justify-center overflow-hidden rounded bg-black">
@@ -388,7 +391,7 @@
                       <button type="button" class="text-cyan-300 hover:underline" onclick={() => locate(asset)}>{t("Buscar archivo…")}</button>
                     </p>
                   {:else}
-                    <p class="truncate text-[11px] text-slate-500">{assetMeta(asset)}</p>
+                    <p class="truncate text-[11px] text-slate-400">{assetMeta(asset)}</p>
                   {/if}
                 </div>
                 {#if asset.kind === "video"}

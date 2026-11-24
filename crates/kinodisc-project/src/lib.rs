@@ -4,6 +4,8 @@
 //! will be used later for job history and caches, not as the project format.
 
 pub mod bundle;
+pub mod import;
+pub mod new;
 
 use kinodisc_domain::{Diagnostic, Project, Severity};
 use std::path::Path;

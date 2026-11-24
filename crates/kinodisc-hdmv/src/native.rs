@@ -609,8 +609,21 @@ pub fn avchd_navigation_file(bytes: &[u8]) -> Result<Vec<u8>, BdmvError> {
             if bytes.len() < 120 {
                 return Err(BdmvError::InvalidIndex("index.bdmv too short"));
             }
-            out.truncate(120);
-            put32(&mut out, 12, 0x78);
+            // Everything up to the end of the Indexes block (one title: 120
+            // bytes; one per episode adds 12 each), then the AVCHD extension.
+            let start = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+            let length = bytes
+                .get(start..start + 4)
+                .map(|value| u32::from_be_bytes([value[0], value[1], value[2], value[3]]) as usize)
+                .ok_or(BdmvError::InvalidIndex("index.bdmv indexes_start"))?;
+            let end = start + 4 + length;
+            if end < 120 || end > bytes.len() {
+                return Err(BdmvError::InvalidIndex("index.bdmv indexes length"));
+            }
+            out.truncate(end);
+            let extension =
+                u32::try_from(end).map_err(|_| BdmvError::InvalidIndex("index.bdmv length"))?;
+            put32(&mut out, 12, extension);
             out.extend_from_slice(&AVCHD_INDEX_EXTENSION);
         }
         b"MOBJ" | b"MPLS" | b"HDMV" => {}

@@ -874,6 +874,7 @@ pub async fn render_quality_sample(
     at_ms: u32,
     video_kbps: u32,
     encoder: Option<kinodisc_toolchain::EncoderPreference>,
+    content: Option<kinodisc_toolchain::ContentType>,
 ) -> Result<kinodisc_render::sample::QualitySample, String> {
     let episode_id = episode_id
         .parse::<kinodisc_domain::EpisodeId>()
@@ -895,6 +896,51 @@ pub async fn render_quality_sample(
         video_kbps,
         &out_dir,
         encoder.unwrap_or_default().x264_preset(),
+        content.unwrap_or_default(),
+    )
+    .await
+}
+
+/// Encodes the same 10 s with the current settings at four bitrates and
+/// with each option, and estimates what each option saves. Only the latest
+/// comparison is kept.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn render_compare_options(
+    project: kinodisc_domain::Project,
+    episode_id: String,
+    at_ms: u32,
+    video_kbps: u32,
+    encoder: Option<kinodisc_toolchain::EncoderPreference>,
+    content: Option<kinodisc_toolchain::ContentType>,
+    options: Vec<kinodisc_render::sample::SampleOption>,
+) -> Result<kinodisc_render::sample::OptionComparison, String> {
+    let episode_id = episode_id
+        .parse::<kinodisc_domain::EpisodeId>()
+        .map_err(|_| "Episodio inválido.".to_string())?;
+    if options.len() > 16 {
+        return Err("Demasiadas opciones para una sola prueba.".to_string());
+    }
+    let project_dir = crate::context::project_dir().unwrap_or_else(|| PathBuf::from("."));
+    let root = cache_dir("option-samples");
+    create_private_dir(&root).map_err(|error| error.to_string())?;
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+    let out_dir = root.join(uuid::Uuid::new_v4().simple().to_string());
+    kinodisc_render::sample::compare_options(
+        &project,
+        &project_dir,
+        episode_id,
+        u64::from(at_ms),
+        video_kbps,
+        &out_dir,
+        encoder.unwrap_or_default().x264_preset(),
+        content.unwrap_or_default(),
+        &options,
     )
     .await
 }

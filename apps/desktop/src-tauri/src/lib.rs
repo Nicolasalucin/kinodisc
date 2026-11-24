@@ -23,8 +23,8 @@ use commands::{
     menu_navigation, menu_save_background, menu_save_labels, menu_templates, open_folder,
     open_release_page, plan_calculate, project_new, project_open, project_save, project_split,
     read_image_data_url, recent_project_forget, recent_projects_list, render_cancel,
-    render_export_folder, render_quality_sample, render_start, slideshow_create,
-    startup_project_path, system_fonts, system_shutdown, toolchain_install,
+    render_compare_options, render_export_folder, render_quality_sample, render_start,
+    slideshow_create, startup_project_path, system_fonts, system_shutdown, toolchain_install,
     toolchain_install_options, toolchain_needs_install, tools_doctor, update_check, verify_iso,
     PlaybackSupport,
 };
@@ -52,6 +52,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             slideshow_create,
             join_create,
             render_quality_sample,
+            render_compare_options,
             disc_inspect,
             disc_import,
             media_prepare_preview,

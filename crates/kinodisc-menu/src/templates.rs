@@ -543,6 +543,87 @@ fn templates() -> &'static [MenuTemplate] {
                 blur_px: 0,
                 decor: Decor::Frame { color: "#D4AF37" },
             },
+            // Dense text lists (1.3): a whole season on one or two pages.
+            // DVD menus allow 36 buttons, so 24 episodes plus the page
+            // buttons still fit.
+            MenuTemplate {
+                id: MenuTemplateId::EpisodeList,
+                name: "Lista de episodios",
+                description: "Doce episodios por página en dos columnas, sobre azul noche.",
+                columns: 2,
+                rows: 6,
+                thumbnail: false,
+                style_kind: ButtonStyleKind::TextOnly,
+                shape_mask: ButtonShapeMask::Rectangle,
+                palette: palette([13, 27, 42], [255, 214, 10], [119, 141, 169]),
+                font_family: "Arial",
+                font_size: 17,
+                font_weight: "bold",
+                text_color: "#E0E1DD",
+                title_color: "#FFD60A",
+                fill_color: "#0D1B2A",
+                shadow_color: "#000000",
+                margin_x: 0.08,
+                margin_y: 0.06,
+                gap: 0.012,
+                header_ratio: 0.15,
+                footer_ratio: 0.1,
+                dim_percent: 0,
+                blur_px: 0,
+                decor: Decor::Stripes { color: "#415A77" },
+            },
+            MenuTemplate {
+                id: MenuTemplateId::SeasonIndex,
+                name: "Índice de temporada",
+                description: "Dieciocho episodios por página en tres columnas, sobre grafito.",
+                columns: 3,
+                rows: 6,
+                thumbnail: false,
+                style_kind: ButtonStyleKind::TextOnly,
+                shape_mask: ButtonShapeMask::Rectangle,
+                palette: palette([30, 30, 36], [255, 255, 255], [244, 162, 97]),
+                font_family: "Arial",
+                font_size: 15,
+                font_weight: "bold",
+                text_color: "#EDEDED",
+                title_color: "#F4A261",
+                fill_color: "#1E1E24",
+                shadow_color: "#000000",
+                margin_x: 0.06,
+                margin_y: 0.06,
+                gap: 0.01,
+                header_ratio: 0.14,
+                footer_ratio: 0.1,
+                dim_percent: 0,
+                blur_px: 0,
+                decor: Decor::TopBand { color: "#2B2B33" },
+            },
+            MenuTemplate {
+                id: MenuTemplateId::CompactIndex,
+                name: "Índice compacto",
+                description: "Veinticuatro episodios por página en cuatro columnas: una serie larga en pocas páginas.",
+                columns: 4,
+                rows: 6,
+                thumbnail: false,
+                style_kind: ButtonStyleKind::TextOnly,
+                shape_mask: ButtonShapeMask::Rectangle,
+                palette: palette([8, 8, 8], [255, 255, 255], [72, 202, 228]),
+                font_family: "Arial",
+                font_size: 13,
+                font_weight: "bold",
+                text_color: "#DADADA",
+                title_color: "#48CAE4",
+                fill_color: "#080808",
+                shadow_color: "#000000",
+                margin_x: 0.05,
+                margin_y: 0.06,
+                gap: 0.008,
+                header_ratio: 0.13,
+                footer_ratio: 0.1,
+                dim_percent: 0,
+                blur_px: 0,
+                decor: Decor::Frame { color: "#48CAE4" },
+            },
         ]
     })
 }
@@ -1367,8 +1448,11 @@ pub(crate) fn grid_rects(
     let margin_y = height * template.margin_y as f64;
     let gap = (width.min(height) * template.gap as f64).max(8.0);
     let header = height * template.header_ratio as f64;
+    // The page buttons sit inside the action-safe area (see
+    // `add_navigation`); the cells stay above them.
     let footer = if has_footer {
-        height * template.footer_ratio as f64
+        let nav_top = height - nav_bottom_inset(canvas) - NAV_HEIGHT * nav_scale(canvas);
+        (height * template.footer_ratio as f64).max(height - nav_top + gap - margin_y)
     } else {
         0.0
     };
@@ -1415,11 +1499,16 @@ pub(crate) fn add_navigation(
     }
     let width = menu.canvas.width as f64;
     let height = menu.canvas.height as f64;
-    let k = (height / 480.0).max(1.0);
+    let k = nav_scale(menu.canvas);
+    // Inside the action-safe area (5 % of the width on every side): they
+    // sat 18 px from the edges, where a TV may cut them
+    // (W_BUTTON_OUTSIDE_SAFE_AREA, QA 1.3).
+    let inset = nav_bottom_inset(menu.canvas);
+    let y = (height - inset - NAV_HEIGHT * k).floor();
     if let Some(target) = previous {
         menu.buttons.push(nav_button(
             "‹ Anterior",
-            LogicalRect::new(18.0 * k, height - 54.0 * k, 180.0 * k, 34.0 * k),
+            LogicalRect::new(inset.ceil(), y, NAV_WIDTH * k, NAV_HEIGHT * k),
             template,
             ButtonAction::GotoMenu { menu: target },
         ));
@@ -1427,12 +1516,32 @@ pub(crate) fn add_navigation(
     if let Some(target) = next {
         menu.buttons.push(nav_button(
             "Siguiente ›",
-            LogicalRect::new(width - 198.0 * k, height - 54.0 * k, 180.0 * k, 34.0 * k),
+            LogicalRect::new(
+                (width - inset - NAV_WIDTH * k).floor(),
+                y,
+                NAV_WIDTH * k,
+                NAV_HEIGHT * k,
+            ),
             template,
             ButtonAction::GotoMenu { menu: target },
         ));
     }
     let _ = page;
+}
+
+/// Size of the page buttons at 480 lines (scaled by [`nav_scale`]).
+const NAV_WIDTH: f64 = 180.0;
+const NAV_HEIGHT: f64 = 34.0;
+
+fn nav_scale(canvas: CanvasSpec) -> f64 {
+    (f64::from(canvas.height) / 480.0).max(1.0)
+}
+
+/// Distance of the page buttons from the bottom and side edges: the
+/// action-safe margin plus a little air, rounded up to even pixels.
+fn nav_bottom_inset(canvas: CanvasSpec) -> f64 {
+    let safe = f64::from(canvas.safe_margin_px);
+    ((safe + 4.0) / 2.0).ceil() * 2.0
 }
 
 fn add_extras_link(menu: &mut Menu, template: &MenuTemplate, extras: MenuId) {

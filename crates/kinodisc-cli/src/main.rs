@@ -3,6 +3,7 @@ mod bundle;
 mod chapters_cmd;
 mod inspect_cmd;
 mod join_cmd;
+mod project_cmd;
 mod render;
 mod scenes_cmd;
 mod slideshow_cmd;
@@ -48,6 +49,7 @@ async fn main() -> ExitCode {
         "split" => split_cmd::run(&args[1..]),
         "scenes" => scenes_cmd::run(&args[1..]),
         "template" => template_cmd::run(&args[1..]),
+        "project" => project_cmd::run(&args[1..]).await,
         "chapters" => chapters_cmd::run(&args[1..]).await,
         "join" => join_cmd::run(&args[1..]).await,
         "inspect" => inspect_cmd::run(&args[1..]),
@@ -699,6 +701,7 @@ fn print_help() {
     println!();
     println!("Uso:");
     println!("  kinodisc-cli doctor [--json] [--verbose]");
+    println!("  kinodisc-cli project new|add|menu|intro|show …   (arma un proyecto completo; `project` muestra la ayuda)");
     println!("  kinodisc-cli plan <project.json> [-o <plan.json>] [--probe]");
     println!("  kinodisc-cli probe <archivo|/dev/srX> [--json]");
     println!(
@@ -716,7 +719,7 @@ fn print_help() {
     println!("  kinodisc-cli split <project.json> [--per-episode]   (un proyecto por disco)");
     println!("  kinodisc-cli render <project.json> [-o <dir>] [--mode dvd|avchd] [--encoder <tipo>] [--cpu <uso>] [--folder] [--no-probe]");
     println!("      --folder  también escribe <dir>/disc con VIDEO_TS o BDMV (idéntico al ISO)");
-    println!("      --encoder auto|cpu-fast|cpu-medium|cpu-slow|nvenc|qsv|amf|vaapi|videotoolbox");
+    println!("      --encoder auto|cpu-fast|cpu-medium|cpu-slow|cpu-slower|nvenc|qsv|amf|vaapi|videotoolbox");
     println!("                H.264 para AVCHD/Blu-ray (auto: hardware si hay, si no cpu-medium).");
     println!("                El tamaño del disco no cambia: cambian la calidad y el tiempo.");
     println!("      --cpu background|balanced|full");
@@ -724,6 +727,8 @@ fn print_help() {
         "                background: un episodio a la vez, la mitad de los hilos, prioridad baja."
     );
     println!("                balanced (por defecto) · full: todos los núcleos, varios episodios a la vez.");
+    println!("      --content film|animation|grain");
+    println!("                ajusta el codificador al tipo de imagen (por defecto film).");
     println!("  kinodisc-cli verify <iso> [--deep] [--json] [--strict]");
     println!("  kinodisc-cli inspect <disco.iso|carpeta> [--json] [--import <carpeta>]   (qué hay en un disco)");
     println!("  kinodisc-cli devices [--json]");

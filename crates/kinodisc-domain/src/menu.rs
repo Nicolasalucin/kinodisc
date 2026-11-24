@@ -124,6 +124,10 @@ pub enum MenuTemplateId {
     Documentary,
     Kids,
     Elegant,
+    /// Text lists for long series (1.3): 12, 18 and 24 episodes a page.
+    EpisodeList,
+    SeasonIndex,
+    CompactIndex,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -519,10 +523,38 @@ impl SubpictureColor {
 pub struct MenuTiming {
     pub duration_ms: u64,
     pub loop_playback: bool,
-    /// Root menu only: when nobody chooses anything for `duration_ms`, the
-    /// disc starts Play All instead of showing the menu again (DVD-Video).
+    /// Before 1.3: root menu only, Play All when nobody chooses anything.
+    /// Read through [`MenuTiming::idle`]; new projects write `idle_action`.
     #[serde(default)]
     pub auto_play: bool,
+    /// Root menu only: what the disc does when nobody chooses anything for
+    /// `duration_ms` (DVD-Video, AVCHD and Blu-ray).
+    #[serde(default)]
+    pub idle_action: IdleAction,
+}
+
+/// What a root menu does once it has been shown for its whole duration with
+/// no choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum IdleAction {
+    /// Keep showing the menu.
+    #[default]
+    Wait,
+    /// Start Play All.
+    PlayAll,
+    /// Play the intro (first-play video) and come back to the menu.
+    Intro,
+}
+
+impl MenuTiming {
+    /// The idle action, honouring the pre-1.3 `auto_play` flag.
+    pub fn idle(&self) -> IdleAction {
+        match self.idle_action {
+            IdleAction::Wait if self.auto_play => IdleAction::PlayAll,
+            action => action,
+        }
+    }
 }
 
 impl Default for MenuTiming {
@@ -531,6 +563,7 @@ impl Default for MenuTiming {
             duration_ms: 30_000,
             loop_playback: true,
             auto_play: false,
+            idle_action: IdleAction::Wait,
         }
     }
 }
@@ -538,6 +571,25 @@ impl Default for MenuTiming {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_action_reads_the_old_auto_play_flag() {
+        let old: MenuTiming =
+            serde_json::from_str(r#"{"durationMs":30000,"loopPlayback":true,"autoPlay":true}"#)
+                .unwrap();
+        assert_eq!(old.idle(), IdleAction::PlayAll);
+        let none: MenuTiming =
+            serde_json::from_str(r#"{"durationMs":30000,"loopPlayback":true}"#).unwrap();
+        assert_eq!(none.idle(), IdleAction::Wait);
+        let intro = MenuTiming {
+            idle_action: IdleAction::Intro,
+            auto_play: true,
+            ..MenuTiming::default()
+        };
+        assert_eq!(intro.idle(), IdleAction::Intro);
+        let json = serde_json::to_string(&intro).unwrap();
+        assert!(json.contains(r#""idleAction":"intro""#), "{json}");
+    }
 
     #[test]
     fn subtitle_action_round_trips_and_old_actions_still_load() {

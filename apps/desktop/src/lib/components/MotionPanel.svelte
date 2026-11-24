@@ -17,6 +17,7 @@
   const duration = $derived(motion?.durationMs ?? 15_000);
   const buttonMotion = $derived(selectedButton?.motionPreview ?? null);
   const transition = $derived(menu?.transition ?? null);
+  let allNotice = $state<string | null>(null);
   const videoAssets = $derived(
     (project?.assets ?? []).filter((asset) => asset.kind === "video"),
   );
@@ -192,7 +193,7 @@
               </span>
             </div>
           {:else}
-            <p class="relative z-10 text-xs text-slate-500">{t("Sin fondo o miniatura para previsualizar.")}</p>
+            <p class="relative z-10 text-xs text-[#ffffffbf]">{t("Sin fondo o miniatura para previsualizar.")}</p>
           {/if}
           <div class="absolute left-2 top-2 flex items-center gap-1 rounded-lg bg-slate-950/80 px-2 py-1 text-[11px] text-slate-300">
             <span class="h-1.5 w-1.5 rounded-full bg-cyan-400"></span>
@@ -221,7 +222,7 @@
                 <line x1={tick} y1="80" x2={tick} y2="90" stroke="var(--color-slate-700)" />
               {/each}
             </svg>
-            <div class="absolute inset-x-3 bottom-2 flex justify-between font-mono text-[11px] text-slate-600">
+            <div class="absolute inset-x-3 bottom-2 flex justify-between font-mono text-[11px] text-slate-500">
               <span>00:00</span>
               <span>{formatDuration(duration / 4)}</span>
               <span>{formatDuration(duration / 2)}</span>
@@ -241,12 +242,39 @@
         </div>
 
         <div class="rounded-lg border border-slate-800 p-3">
-          <div class="flex items-center justify-between">
+          <div class="flex flex-wrap items-center justify-between gap-2">
             <h2 class="ui-section-title">
               {t("Botones de vídeo")} · {menu.buttons.length}
             </h2>
-            <span class="text-[11px] text-slate-500">{t("máscara + fragmento en bucle")}</span>
+            <div class="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                class="ui-btn ui-btn-sm"
+                onclick={() => {
+                  const changed = projectStore.setAllThumbnailMotion(true);
+                  allNotice = changed
+                    ? t("{count} miniaturas en movimiento, en todas las páginas.", { count: changed })
+                    : t("Ninguna página tiene miniaturas: usa una plantilla con miniaturas.");
+                }}
+                title={t("Cada miniatura de episodio, en todas las páginas, muestra 10 segundos de su episodio en bucle")}
+              >
+                {t("Animar todas las miniaturas")}
+              </button>
+              <button
+                type="button"
+                class="ui-btn ui-btn-sm ui-btn-ghost"
+                onclick={() => {
+                  projectStore.setAllThumbnailMotion(false);
+                  allNotice = t("Miniaturas quietas.");
+                }}
+              >
+                {t("Dejarlas quietas")}
+              </button>
+            </div>
           </div>
+          {#if allNotice}
+            <p class="mt-1 text-[11px] text-emerald-300" role="status">{allNotice}</p>
+          {/if}
           <div class="mt-2 grid gap-2 md:grid-cols-2">
             {#each menu.buttons as button (button.id)}
               <button
@@ -267,7 +295,7 @@
                       style={maskStyle(button, "2.5rem")}
                     />
                   {:else}
-                    <div class="flex h-10 w-16 items-center justify-center rounded bg-slate-900 text-[11px] text-slate-600">
+                    <div class="flex h-10 w-16 items-center justify-center rounded bg-slate-900 text-[11px] text-slate-500">
                       {t("sin fotograma")}
                     </div>
                   {/if}

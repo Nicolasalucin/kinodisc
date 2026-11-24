@@ -318,4 +318,6 @@ jobs:
           files: release/*
           generate_release_notes: true
           draft: false
-          prerelease: false
+          # A tag with a suffix (v1.3.0-nightly.1) is a pre-release: the
+          # app's update check ignores it.
+          prerelease: ${{ contains(github.ref_name, '-') }}

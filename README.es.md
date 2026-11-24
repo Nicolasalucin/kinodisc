@@ -31,6 +31,24 @@ discos que se reproducen en el reproductor del living: menús con miniaturas,
 capítulos, varias pistas de audio y subtítulos, «reproducir todo», menús de
 escenas… el disco completo, revisado antes de grabarlo.
 
+## Novedades de la 1.3 (nightly)
+
+Una versión nightly: nueva y no del todo probada (ver el [registro de cambios](CHANGELOG.md)).
+
+- **Más calidad en el mismo tamaño** en AVCHD y Blu-ray: H.264 en dos pasadas
+  con cuadros B, entre un 20 y un 30 % menos de bits para la misma imagen en SD
+  y entre un 15 y un 35 % en HD.
+- **Los episodios siguen con el próximo**, y la tecla de capítulo siguiente pasa
+  al episodio siguiente (R1 en una PS4).
+- **Intro en AVCHD y Blu-ray**, al poner el disco y/o si nadie elige nada en el
+  menú.
+- **Plantillas para series largas**: 12, 18 o 24 episodios por página.
+- **Tipo de contenido** (película, animación, vídeo con grano), codificador
+  **CPU máximo** y **GOP de 2 segundos** (3 s, muy experimental).
+- **El DVD-Video elige media resolución por bitrate**, no por duración.
+- **La línea de comandos arma un disco entero**: proyecto nuevo, episodios,
+  menú, intro, subtítulos, GOP.
+
 ## Novedades de la 1.2
 
 - **Reproducir solo**: un botón en el menú principal del DVD hace que el disco
@@ -187,6 +205,11 @@ kinodisc-cli toolchain install all                   # descargas verificadas (Wi
 kinodisc-cli render proyecto.json -o salida --folder # ISO + carpeta VIDEO_TS/BDMV
 kinodisc-cli render proyecto.json --encoder cpu-slow # codificador H.264 (auto, cpu-fast, cpu-medium, nvenc…)
 kinodisc-cli render proyecto.json --cpu background   # uso del procesador (background, balanced, full)
+kinodisc-cli project new disco.json episodios/ --mode avchd --template compact-index
+kinodisc-cli project intro disco.json intro.mp4       # intro al poner el disco (--idle-only)
+kinodisc-cli project menu disco.json --idle intro --idle-seconds 90
+kinodisc-cli project subtitles disco.json subs/      # .srt emparejados por nombre
+kinodisc-cli project gop disco.json 2                # GOP de AVCHD/Blu-ray (1, 2 o 3 s)
 kinodisc-cli split proyecto.json --per-episode       # un proyecto por disco
 kinodisc-cli scenes proyecto.json                    # menús de escenas desde los capítulos
 kinodisc-cli template proyecto.json multi-page-tv-grid  # plantilla de menú (--list)

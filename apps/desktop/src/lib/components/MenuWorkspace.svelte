@@ -1,7 +1,7 @@
 <script lang="ts">
   import { t } from "../i18n/index.svelte";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { commands } from "../api/bindings";
+  import { commands, type IdleAction } from "../api/bindings";
   import { messageOf, unwrap } from "../api/client";
   import CanvasStage from "../editor/CanvasStage.svelte";
   import TemplateGallery from "./TemplateGallery.svelte";
@@ -68,8 +68,19 @@
   const project = $derived(projectStore.project);
   const menu = $derived(projectStore.activeMenu);
   const isRootMenu = $derived(Boolean(menu && menu.id === projectStore.project?.rootMenu));
-  const autoPlay = $derived(menu?.timing.autoPlay ?? false);
-  const autoPlayHd = $derived(projectStore.project?.disc.mode === "avchd");
+  // Pre-1.3 projects stored `autoPlay`; it reads as Play All.
+  const idleAction = $derived<IdleAction>(
+    menu?.timing.idleAction && menu.timing.idleAction !== "wait"
+      ? menu.timing.idleAction
+      : menu?.timing.autoPlay
+        ? "playAll"
+        : "wait",
+  );
+  const hasIntro = $derived(Boolean(projectStore.project?.firstPlay));
+  const introName = $derived.by(() => {
+    const intro = projectStore.project?.firstPlay;
+    return intro ? (projectStore.assetFor(intro.asset)?.displayName ?? t("Intro")) : null;
+  });
   const menus = $derived(project?.menus ?? []);
   const selected = $derived(projectStore.selectedButton);
 
@@ -229,6 +240,33 @@
     }
   }
 
+  async function pickIntro() {
+    const picked = await open({
+      multiple: false,
+      filters: [{ name: t("Vídeo de intro"), extensions: ["mp4", "mkv", "mov", "m4v", "avi", "mpg", "mpeg", "ts", "m2ts", "webm"] }],
+    });
+    if (typeof picked !== "string") return;
+    busy = true;
+    localError = null;
+    try {
+      const probe = await unwrap(commands.mediaProbeFile(picked));
+      if (!probe.video) throw new Error(t("Ese archivo no tiene vídeo."));
+      const assetId = projectStore.addAsset(picked, probe, "video");
+      projectStore.setIntro(assetId);
+      notice = t("Intro actualizada: se reproduce al poner el disco, antes del menú.");
+    } catch (cause) {
+      localError = messageOf(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function removeIntro() {
+    projectStore.setIntro(null);
+    if (idleAction === "intro") projectStore.setMenuIdleAction("wait");
+    notice = t("Intro quitada.");
+  }
+
   function addButton() {
     if (!projectStore.addButton("classicFrame")) {
       // Said once, here, with what to do (QA 1.2.4: the same error showed
@@ -289,22 +327,60 @@
         <Icon name="music" size={14} /><span class="hidden 2xl:inline">{t("Música")}</span>
       </button>
       {#if isRootMenu}
-        <!-- Auto-play: Play All when nobody chooses anything. -->
+        <!-- The intro plays when the disc starts; OK skips it. -->
         <button
           type="button"
           class="ui-btn ui-btn-sm"
-          aria-pressed={autoPlay}
-          class:ui-btn-primary={autoPlay}
-          disabled={busy || autoPlayHd}
-          onclick={() => projectStore.setMenuAutoPlay(!autoPlay)}
-          title={autoPlayHd
-            ? t("Solo en DVD-Video: en Blu-ray y AVCHD el menú espera hasta que elijas.")
-            : t("Si nadie elige nada, el disco empieza a reproducir todo cuando el menú termina ({seconds} s).", {
+          class:ui-btn-primary={hasIntro}
+          onclick={pickIntro}
+          disabled={busy}
+          title={introName
+            ? t("Intro: {name}. Clic para cambiarla.", { name: introName })
+            : t("Elegir un vídeo de intro: se reproduce al poner el disco, antes del menú")}
+        >
+          <Icon name="play" size={14} /><span class="hidden 2xl:inline">{t("Intro")}</span>
+        </button>
+        {#if hasIntro}
+          <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost" onclick={removeIntro} disabled={busy} title={t("Quitar la intro")}>
+            <Icon name="close" size={14} /><span class="sr-only">{t("Quitar la intro")}</span>
+          </button>
+          <label
+            class="flex items-center gap-1.5 text-[12px] text-slate-300"
+            title={t("La intro se reproduce al poner el disco, antes del menú. Sin marcar, solo la pasa el menú si nadie elige nada.")}
+          >
+            <input
+              type="checkbox"
+              checked={projectStore.project?.firstPlay?.atStart ?? true}
+              disabled={busy}
+              onchange={(event) => projectStore.setIntroAtStart(event.currentTarget.checked)}
+            />
+            <span class="whitespace-nowrap">{t("Al poner el disco")}</span>
+          </label>
+        {/if}
+        <!-- What happens when nobody chooses anything. -->
+        <label
+          class="flex items-center gap-1.5 text-[12px] text-slate-300"
+          title={projectStore.project?.disc.mode === "avchd"
+            ? t("Después de {seconds} s en el menú principal sin elegir nada. En AVCHD y Blu-ray cuenta desde que aparece el menú: moverse entre los botones no lo reinicia.", {
+                seconds: Math.max(60, Math.round((projectStore.activeMenu?.timing.durationMs ?? 30_000) / 1000)),
+              })
+            : t("Después de {seconds} s en el menú principal sin elegir nada.", {
                 seconds: Math.round((projectStore.activeMenu?.timing.durationMs ?? 30_000) / 1000),
               })}
         >
-          <Icon name="play" size={14} /><span class="hidden 2xl:inline">{t("Reproducción automática")}</span>
-        </button>
+          <span class="hidden whitespace-nowrap 2xl:inline">{t("Si nadie elige nada")}</span>
+          <select
+            class="ui-input ui-input-sm"
+            aria-label={t("Si nadie elige nada")}
+            value={idleAction}
+            disabled={busy}
+            onchange={(event) => projectStore.setMenuIdleAction(event.currentTarget.value as IdleAction)}
+          >
+            <option value="wait">{t("Esperar en el menú")}</option>
+            <option value="playAll">{t("Reproducir todo")}</option>
+            <option value="intro" disabled={!hasIntro}>{t("Pasar la intro y volver al menú")}</option>
+          </select>
+        </label>
       {/if}
 
       <div class="ml-auto flex items-center gap-1.5">
@@ -417,7 +493,7 @@
       {:else}
         <span>{menu.buttons.length} {t(menu.buttons.length === 1 ? "botón" : "botones")} · {t(menu.audio ? "música activa" : "sin música")}</span>
       {/if}
-      <span class="ml-auto hidden truncate text-slate-500 xl:inline" title={t("Teclado: flechas mueven (Mayús = más rápido) · [ ] cambian de botón · Supr borra · Esc deselecciona.")}>
+      <span class="ml-auto hidden truncate text-slate-400 xl:inline" title={t("Teclado: flechas mueven (Mayús = más rápido) · [ ] cambian de botón · Supr borra · Esc deselecciona.")}>
         {t("Flechas mueven · [ ] cambian de botón · Supr borra · Ctrl+D duplica")}
       </span>
     </div>

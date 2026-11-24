@@ -10,6 +10,7 @@ import {
   type ButtonAction,
   type AudioFormat,
   type ButtonShapeMask,
+  type IdleAction,
   type ButtonStyleKind,
   type Chapter_Serialize,
   type EncodingPriority,
@@ -229,6 +230,9 @@ const TEMPLATE_MENU_NAMES = new Set([
   "Documental",
   "Infantil",
   "Elegante",
+  "Lista de episodios",
+  "Índice de temporada",
+  "Índice compacto",
 ]);
 
 /**
@@ -1626,7 +1630,8 @@ class ProjectStore {
         style: defaultSubtitleStyle(),
       })),
       encodingPriority: "medium",
-      postAction: "returnToMenu",
+      // A series goes on to the next episode (1.3); the Inspector changes it.
+      postAction: "nextEpisode",
       encodeOverride: null,
       videoMode: "auto",
       filters: defaultVideoFilters(),
@@ -2335,12 +2340,42 @@ class ProjectStore {
     this.touch();
   }
 
-  /** Root menu: start Play All when nobody chooses anything (DVD-Video). */
-  setMenuAutoPlay(enabled: boolean): void {
+  /**
+   * Root menu: what the disc does when nobody chooses anything for the
+   * menu's duration (wait, Play All or the intro). Every format since 1.3.
+   */
+  setMenuIdleAction(action: IdleAction): void {
     const project = this.project;
     const root = project?.menus.find((menu) => menu.id === project.rootMenu);
     if (!root) return;
-    root.timing = { ...root.timing, autoPlay: enabled };
+    // `autoPlay` is the pre-1.3 flag; `idleAction` replaces it.
+    root.timing = { ...root.timing, autoPlay: false, idleAction: action };
+    this.touch();
+  }
+
+  /** The video played when the disc starts (and on idle), or none. */
+  setIntro(assetId: string | null): void {
+    const project = this.project;
+    if (!project) return;
+    project.firstPlay = assetId
+      ? {
+          asset: assetId,
+          trim: null,
+          audio: null,
+          targetMenu: project.rootMenu,
+          skippable: true,
+          encodeOverride: null,
+          atStart: true,
+        }
+      : null;
+    this.touch();
+  }
+
+  /** Whether the intro plays when the disc starts (else only when idle). */
+  setIntroAtStart(atStart: boolean): void {
+    const firstPlay = this.project?.firstPlay;
+    if (!firstPlay) return;
+    firstPlay.atStart = atStart;
     this.touch();
   }
 
@@ -3109,9 +3144,11 @@ class ProjectStore {
         frameRate: pal ? { num: 25, den: 1 } : { num: 24_000, den: 1_001 },
         level: "level41",
         blurayCompat: true,
-        vbvMaxrateKbps: bluRay ? 38_000 : 24_000,
-        vbvBufsizeKbps: bluRay ? 35_000 : 24_000,
+        // AVCHD on DVD media: 18 Mb/s (24 Mb/s is the memory-card figure).
+        vbvMaxrateKbps: bluRay ? 38_000 : 18_000,
+        vbvBufsizeKbps: bluRay ? 35_000 : 18_000,
         keyintFrames: 24,
+        gopSeconds: 1,
         slices: 4,
       };
       project.disc.aspect = "sixteenNine";
@@ -3120,12 +3157,12 @@ class ProjectStore {
         const sd = previous.video.resolution === "480i" || previous.video.resolution === "576i";
         // A remembered SD format is kept only on DVD media (Blu-ray has no SD here).
         if (!bluRay || !sd) {
-          project.disc.video = { ...previous.video, vbvMaxrateKbps: bluRay ? 38_000 : 24_000, vbvBufsizeKbps: bluRay ? 35_000 : 24_000 };
+          project.disc.video = { ...previous.video, vbvMaxrateKbps: bluRay ? 38_000 : 18_000, vbvBufsizeKbps: bluRay ? 35_000 : 18_000 };
           project.disc.aspect = previous.aspect;
         }
       }
-      project.budget = { ...AVCHD_BUDGET, maxVideoKbps: bluRay ? 38_000 : 24_000 };
-      project.firstPlay = null;
+      project.budget = { ...AVCHD_BUDGET, maxVideoKbps: bluRay ? 38_000 : 18_000 };
+      // AVCHD and Blu-ray play the intro too since 1.3: it is kept.
     } else {
       project.disc.mode = "dvdVideo";
       project.disc.video = {
@@ -3242,6 +3279,14 @@ class ProjectStore {
     this.touch();
   }
 
+  /** AVCHD/Blu-ray: seconds between key frames (1, 2 or 3). */
+  setGopSeconds(seconds: number): void {
+    const project = this.project;
+    if (!project || project.disc.video.kind !== "avchd") return;
+    project.disc.video.gopSeconds = Math.min(3, Math.max(1, Math.round(seconds)));
+    this.touch();
+  }
+
   setTrellis(enabled: boolean): void {
     const project = this.project;
     if (!project || project.disc.video.kind !== "dvd") return;
@@ -3271,6 +3316,49 @@ class ProjectStore {
     if (!menu) return;
     menu.motionConfig = null;
     this.touch();
+  }
+
+  /**
+   * Every episode card with a thumbnail, on every page, loops 10 s of its
+   * episode (or stops). Mirrors `kinodisc_menu::set_all_thumbnail_motion`.
+   */
+  setAllThumbnailMotion(enabled: boolean): number {
+    const project = this.project;
+    if (!project) return 0;
+    let changed = 0;
+    for (const menu of project.menus) {
+      let any = false;
+      for (const button of menu.buttons) {
+        const thumbnail = button.thumbnail;
+        if (!thumbnail) continue;
+        if (enabled) {
+          button.motionPreview = {
+            sourceStartMs:
+              thumbnail.fps.num > 0
+                ? Math.round((thumbnail.inFrame * 1000 * thumbnail.fps.den) / thumbnail.fps.num)
+                : 0,
+            loopDurationMs: 10_000,
+          };
+          any = true;
+          changed += 1;
+        } else if (button.motionPreview) {
+          button.motionPreview = null;
+          changed += 1;
+        }
+      }
+      if (any && !menu.motionConfig) {
+        // Keeps the page's duration (the root menu's idle wait).
+        menu.motionConfig = {
+          durationMs: Math.max(1_000, menu.timing.durationMs),
+          loopEnabled: true,
+          fadeInMs: 500,
+          fadeOutMs: 500,
+          audioVolume: 1,
+        };
+      }
+    }
+    this.touch();
+    return changed;
   }
 
   updateButtonMotion(
@@ -3352,7 +3440,7 @@ class ProjectStore {
         highlightOpacity: 15,
         selectOpacity: 15,
       },
-      timing: { durationMs: 30_000, loopPlayback: true, autoPlay: false },
+      timing: { durationMs: 30_000, loopPlayback: true, autoPlay: false, idleAction: "wait" },
       template: null,
       transition: null,
     };

@@ -18,8 +18,8 @@ use kinodisc_avchd::{
 use kinodisc_domain::{
     normalize_rect, AspectRatio, AssetId, AssetSource, AuthoringMode, ButtonAction, ButtonId,
     ButtonShapeMask, Diagnostic, DiscCapacity, DvdProfile, Episode, EpisodeId, FrameRate, HdScan,
-    JobId, MediaKind, MediaProbe, MenuBackground, MenuId, MenuScaleMode, PixelRect, Project,
-    TvStandard, VideoConfig, VideoScaleMode,
+    IdleAction, JobId, MediaKind, MediaProbe, MenuBackground, MenuId, MenuScaleMode, PixelRect,
+    Project, TvStandard, VideoConfig, VideoScaleMode,
 };
 use kinodisc_dvd::{
     build_dvdauthor_xml, AudioEncodeConfig, AuthoredAudioTrack, AuthoredButton,
@@ -69,7 +69,8 @@ pub const HDMV_MENU_PTS_90K: u64 = 54_000_000;
 /// Bump when the FFmpeg arguments or the encoded artifact layout change so
 /// existing cache entries are invalidated.
 /// 11 (1.2.4): AVCHD 480i/576i fit on the display canvas and tag SAR with `/`.
-const ENCODER_REV: u32 = 11;
+/// 13 (1.3.0): x264 two-pass, B-frames, 1 s GOP, PsF on SD, BT.601, content tune.
+const ENCODER_REV: u32 = 13;
 
 /// Upper bound for a single auxiliary FFmpeg invocation (menu clip, menu audio
 /// or subtitle extraction). Encoding jobs have their own progress timeouts.
@@ -137,6 +138,9 @@ pub struct RenderOptions {
     /// How much of the processor the encoders may take (episodes at a time,
     /// threads, priority). Never changes the disc.
     pub cpu_usage: CpuUsage,
+    /// What the videos are (film, animation, grainy video), to tune the
+    /// encoders. Part of the episode cache key.
+    pub content: kinodisc_toolchain::ContentType,
 }
 
 impl Default for RenderOptions {
@@ -148,6 +152,7 @@ impl Default for RenderOptions {
             hardware_encoding: EncoderPreference::Auto,
             mux_backend: MuxBackend::Auto,
             cpu_usage: CpuUsage::default(),
+            content: kinodisc_toolchain::ContentType::default(),
         }
     }
 }
@@ -1394,10 +1399,28 @@ fn compile_hd_menu(
             RgbaBitmap::solid(button_width, button_height, fill)
         }
         .map_err(menu_error)?;
-        let selected = RgbaBitmap::solid(button_width, button_height, [255, 255, 255, 76])
-            .map_err(menu_error)?;
-        let activated = RgbaBitmap::solid(button_width, button_height, [34, 211, 238, 112])
-            .map_err(menu_error)?;
+        // The intro's full-screen skip button never tints the picture.
+        let invisible = menu.id == hd_intro_menu_id();
+        let selected = RgbaBitmap::solid(
+            button_width,
+            button_height,
+            if invisible {
+                [0, 0, 0, 0]
+            } else {
+                [255, 255, 255, 76]
+            },
+        )
+        .map_err(menu_error)?;
+        let activated = RgbaBitmap::solid(
+            button_width,
+            button_height,
+            if invisible {
+                [0, 0, 0, 0]
+            } else {
+                [34, 211, 238, 112]
+            },
+        )
+        .map_err(menu_error)?;
         let hmv_id = (position + 1) as u16;
         let target = |direction: kinodisc_domain::NavDirection| {
             navigation.target(button.id, direction).and_then(|id| {
@@ -1473,7 +1496,10 @@ fn hdmv_commands(action: &ButtonAction, context: &HdMenuContext<'_>) -> Vec<Hdmv
             // Button-less menus get no MovieObject; JumpTitle(0) is not a
             // valid HDMV title (1..=999), so keep the button inert instead.
             .unwrap_or_else(|| vec![HdmvCommand::new(kinodisc_hdmv::OP_NOP, 0, 0)]),
-        ButtonAction::PlayFirstPlay => vec![set_gpr(0, 0), jump_title(1)],
+        ButtonAction::PlayFirstPlay => match context.intro_object {
+            Some(intro) => vec![jump_object(u32::from(intro))],
+            None => vec![set_gpr(0, 0), jump_title(1)],
+        },
         ButtonAction::JumpTitleChapter { episode, chapter }
             if context.episode_objects.contains_key(episode)
                 && context
@@ -1514,7 +1540,18 @@ fn hdmv_commands(action: &ButtonAction, context: &HdMenuContext<'_>) -> Vec<Hdmv
 }
 
 /// Plays one episode (its own playlist) from `relative_mark`; the episode
-/// object then returns to the menu or continues with the next episode.
+/// object then returns to the menu. Episodes that go on to the next one use
+/// `play_episode_at` instead (the whole series, title 1), so next chapter
+/// reaches the next episode and the PS4 allows fast-forward.
+///
+/// What a PS4 does with these discs (1.3 trials):
+/// - an AVCHD index with 21 titles is "Unknown disc": keep the single title;
+/// - an episode started with `JumpObject` inside the Top Menu title cannot
+///   be fast-forwarded; inside title 1 it can;
+/// - sending title 1 on to an episode object (compare a GPR, then
+///   `JumpObject`) landed in the wrong episode, so it is not done;
+/// - at the end of title 1 it leaves the disc for its home screen, even with
+///   a `JumpObject` to the menu after the playlist.
 fn play_episode_object(object: u16, relative_mark: u32) -> Vec<HdmvCommand> {
     vec![
         set_gpr(kinodisc_hdmv::episodes::EPISODE_MARK_GPR, relative_mark),
@@ -1791,6 +1828,12 @@ async fn render_avchd_project(
                 },
             )
         };
+        // A progressive (or deinterlaced) source on a 480i/576i/1080i disc is
+        // coded progressive and flagged interlaced (PsF), not MBAFF.
+        let progressive_source = !picture::keeps_interlacing(
+            &episode.filters,
+            picture::PictureSource::from_probe(probe).is_some_and(|source| source.interlaced),
+        );
         let cache_key = if cache.is_some() {
             let source_fp = source_fingerprint_for_asset(&input, asset).await?;
             // Hash the reconciled/harmonized audio actually encoded, so a
@@ -1828,6 +1871,18 @@ async fn render_avchd_project(
                         "medium" => String::new(),
                         preset if hardware_encoder.is_none() => format!(":x264-{preset}"),
                         _ => String::new(),
+                    }
+                ) + &format!(
+                    ":{}:{}{}",
+                    options.content.key(),
+                    if progressive_source {
+                        "progressive"
+                    } else {
+                        "fields"
+                    },
+                    match config.gop_seconds {
+                        0 | 1 => String::new(),
+                        seconds => format!(":gop{seconds}"),
                     }
                 ),
                 gop_frames: config.keyint_frames,
@@ -1972,6 +2027,11 @@ async fn render_avchd_project(
             hardware_encoder: if video_copy { None } else { hardware_encoder },
             x264_preset: options.hardware_encoding.x264_preset(),
             video_copy,
+            // Two passes on the CPU path; the statistics live in the work
+            // folder, one file per episode (episodes encode in parallel).
+            passlog: Some(episodes_dir.join(format!("episode-{:02}-x264", episode.number))),
+            progressive_source,
+            content: options.content,
         };
         prepared_hd.push(PreparedHdEpisode {
             index,
@@ -2328,6 +2388,13 @@ async fn render_avchd_project(
                 menu_list.push(menu);
             }
         }
+        // The intro is one more "menu" (its clip and object), after the
+        // real ones.
+        let intro_menu = hd_intro_menu(&project, root);
+        if let Some(intro) = &intro_menu {
+            menu_list.push(intro);
+        }
+        let idle = hd_idle_action(&project, root);
         let menu_objects: HashMap<MenuId, u16> = menu_list
             .iter()
             .enumerate()
@@ -2346,15 +2413,29 @@ async fn render_avchd_project(
             &episode_marks,
             base_object.saturating_add(menu_list.len() as u16),
         );
+        // Episodes that go on to the next one play from their mark in the
+        // whole series (title 1): next chapter reaches the next episode and
+        // playback continues. The others play their own range and return.
         let episode_objects: HashMap<EpisodeId, (u16, u16)> = episode_plan
             .iter()
+            .filter(|item| {
+                project
+                    .episode(item.episode)
+                    .map(|episode| episode.post_action)
+                    != Some(kinodisc_domain::PostAction::NextEpisode)
+            })
             .map(|item| (item.episode, (item.object, item.first_mark)))
             .collect();
+        let connected_episodes = order.len().saturating_sub(episode_objects.len());
+        let intro_object = intro_menu
+            .as_ref()
+            .and_then(|intro| menu_objects.get(&intro.id).copied());
         let context = HdMenuContext {
             episode_marks: &episode_marks,
             chapter_marks: &chapter_marks,
             menu_objects: &menu_objects,
             episode_objects: &episode_objects,
+            intro_object,
         };
         let mut compiled_menus: Vec<(MenuId, String, CompiledHdMenu, Option<PathBuf>)> = Vec::new();
         let mut menu_ready = true;
@@ -2428,6 +2509,7 @@ async fn render_avchd_project(
             {
                 let menu = project
                     .menu(*menu_id)
+                    .or(intro_menu.as_ref().filter(|intro| intro.id == *menu_id))
                     .ok_or_else(|| RenderError::Menu("menú inexistente".to_string()))?;
                 let menu_spec = build_menu_clip_spec(
                     &project,
@@ -2514,8 +2596,8 @@ async fn render_avchd_project(
                     log(
                         &events,
                         format!(
-                            "{} episodios con playlist propia: cada uno vuelve al menú al terminar",
-                            episode_plan.len()
+                            "Episodios: {connected_episodes} siguen con el próximo (título 1: «siguiente capítulo» pasa de episodio), {} vuelven al menú al terminar",
+                            episode_objects.len()
                         ),
                     )
                     .await;
@@ -2535,6 +2617,17 @@ async fn render_avchd_project(
                         write_bdmv_file(&index_backup, &index)?;
                     }
                 }
+                let intro_at_start = project
+                    .first_play
+                    .as_ref()
+                    .is_some_and(|intro| intro.at_start);
+                wire_hd_intro_and_idle(
+                    &bdmv_root,
+                    root_object,
+                    intro_object.map(|object| (object, intro_at_start)),
+                    idle,
+                )?;
+                wire_title_one(&bdmv_root, root_object)?;
                 log(
                     &events,
                     format!(
@@ -2543,6 +2636,35 @@ async fn render_avchd_project(
                     ),
                 )
                 .await;
+                if let Some(intro) = intro_object {
+                    log(
+                        &events,
+                        format!(
+                            "Intro HD en el objeto {intro}: {} y vuelta al menú raíz",
+                            if intro_at_start {
+                                "una vez al poner el disco"
+                            } else {
+                                "solo si nadie elige nada"
+                            }
+                        ),
+                    )
+                    .await;
+                }
+                if idle != IdleAction::Wait {
+                    log(
+                        &events,
+                        format!(
+                            "Menú raíz sin elección durante {} s: {}",
+                            menu_clip_duration_ms(&project, root) / 1000,
+                            if idle == IdleAction::Intro {
+                                "intro"
+                            } else {
+                                "reproducir todo"
+                            }
+                        ),
+                    )
+                    .await;
+                }
             }
         }
         ensure_not_cancelled(&cancel)?;
@@ -2648,7 +2770,13 @@ async fn encode_avchd_episode_with_progress(
     let forward = tokio::spawn(async move {
         while let Some(progress) = receiver.recv().await {
             let fraction = (progress.out_time_us as f64 / 1000.0 / duration).min(1.0);
-            let episode_fraction = fraction.min(1.0);
+            // The analysis pass is quicker than the final one.
+            let (base, span) = match progress.stage {
+                "avchd-pass1" => (0.0, 0.35),
+                "avchd-pass2" => (0.35, 0.65),
+                _ => (0.0, 1.0),
+            };
+            let episode_fraction = (base + fraction * span).min(1.0);
             // Episodes encoded at the same time report one combined figure.
             let done = match &shared {
                 Some(shared) => match shared.lock() {
@@ -4715,7 +4843,12 @@ struct HdMenuContext<'a> {
     /// Per-episode MovieObject (plays only that episode, then returns) and
     /// the episode's first mark in the full movie. Empty means the legacy
     /// behaviour (play the movie from the episode's mark).
+    /// Per-episode MovieObject (plays only that episode, then returns) and
+    /// the episode's first mark in the full movie, for the episodes that
+    /// return to the menu. Missing means "play the movie from the mark".
     episode_objects: &'a HashMap<EpisodeId, (u16, u16)>,
+    /// MovieObject of the HD intro, when the disc has one.
+    intro_object: Option<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -4735,6 +4868,9 @@ struct MenuClipSpec {
     capacity: DiscCapacity,
     maxrate_kbps: u32,
     vbv_bufsize_kbps: u32,
+    /// Length of the clip: 60 s for a menu (it loops), the idle time for a
+    /// root menu with an idle action, the video's length for the HD intro.
+    duration_ms: u64,
     video: MenuClipVideo,
     audio: Option<MenuClipAudio>,
     overlays: Vec<MenuClipOverlay>,
@@ -4774,6 +4910,9 @@ struct MenuClipTransition {
 #[derive(Debug, Clone)]
 struct MenuClipAudio {
     path: PathBuf,
+    /// Where the audio starts in its file (the background video's IN point
+    /// when the sound comes from that same video).
+    start_ms: u64,
     gain_db: f32,
     fade_in_ms: u32,
     fade_out_ms: u32,
@@ -4899,6 +5038,15 @@ fn build_menu_clip_spec(
             .and_then(|asset| asset_path(project_dir, asset))
             .map(|path| MenuClipAudio {
                 path,
+                start_ms: match (&menu.background, &video) {
+                    (
+                        MenuBackground::VideoLoop {
+                            asset: background, ..
+                        },
+                        MenuClipVideo::Video { in_ms, .. },
+                    ) if *background == audio.asset => *in_ms,
+                    _ => 0,
+                },
                 gain_db: audio.gain_db,
                 fade_in_ms: audio.fade_in_ms,
                 fade_out_ms: audio.fade_out_ms,
@@ -4967,11 +5115,232 @@ fn build_menu_clip_spec(
         capacity: format.capacity,
         maxrate_kbps: format.maxrate_kbps,
         vbv_bufsize_kbps: format.vbv_bufsize_kbps,
+        duration_ms: menu_clip_duration_ms(project, menu),
         video,
         audio,
         overlays,
         transition,
     }
+}
+
+/// Synthetic menu id of the HD intro (never stored in a project).
+fn hd_intro_menu_id() -> MenuId {
+    MenuId::from_u128(0x6b69_6e6f_6469_7363_696e_7472_6f00_0001)
+}
+
+/// Shortest and longest idle wait on an HD root menu. HDMV cannot see the
+/// remote: the wait counts from the moment the menu appears and moving
+/// between buttons does not restart it, so it is never under a minute.
+const HD_IDLE_MIN_MS: u64 = 60_000;
+/// Set by the intro object, so the root menu plays the intro only once.
+const INTRO_SEEN_GPR: u16 = 7;
+const HD_IDLE_MAX_MS: u64 = 600_000;
+
+/// `(in_ms, duration_ms)` of the intro video, `None` without a usable one.
+fn hd_intro_span(project: &Project) -> Option<(u64, u64)> {
+    let first_play = project.first_play.as_ref()?;
+    let asset = project.asset(first_play.asset)?;
+    let fps = asset.probe.video.as_ref()?.frame_rate.as_f64().max(1.0);
+    let ms = |frame: u64| (frame as f64 * 1000.0 / fps).round() as u64;
+    let (in_ms, end_ms) = match first_play.trim {
+        Some(trim) if trim.end > trim.start => (ms(trim.start), ms(trim.end)),
+        Some(trim) => (ms(trim.start), asset.probe.duration_ms?),
+        None => (0, asset.probe.duration_ms?),
+    };
+    let duration = end_ms.saturating_sub(in_ms);
+    (duration >= 500).then_some((in_ms, duration))
+}
+
+fn menu_clip_duration_ms(project: &Project, menu: &kinodisc_domain::Menu) -> u64 {
+    if menu.id == hd_intro_menu_id() {
+        return hd_intro_span(project).map_or(60_000, |(_, duration)| duration);
+    }
+    if menu.id == project.root_menu && hd_idle_action(project, menu) != IdleAction::Wait {
+        return menu
+            .timing
+            .duration_ms
+            .clamp(HD_IDLE_MIN_MS, HD_IDLE_MAX_MS);
+    }
+    60_000
+}
+
+/// The root menu's idle action on an HD disc (`Intro` needs an intro).
+fn hd_idle_action(project: &Project, menu: &kinodisc_domain::Menu) -> IdleAction {
+    match menu.timing.idle() {
+        IdleAction::Intro if hd_intro_span(project).is_none() => IdleAction::Wait,
+        IdleAction::PlayAll if project.episodes.is_empty() => IdleAction::Wait,
+        action => action,
+    }
+}
+
+/// The intro as an HD "menu": the intro video and its sound, and one
+/// invisible full-screen button (OK skips it when the intro is skippable).
+/// Its movie object then returns to the root menu instead of looping.
+fn hd_intro_menu(project: &Project, root: &kinodisc_domain::Menu) -> Option<kinodisc_domain::Menu> {
+    let first_play = project.first_play.as_ref()?;
+    hd_intro_span(project)?;
+    if !first_play.at_start && root.timing.idle() != IdleAction::Intro {
+        return None;
+    }
+    let asset = project.asset(first_play.asset)?;
+    let (in_frame, out_frame) = first_play
+        .trim
+        .map_or((0, 0), |trim| (trim.start, trim.end.max(trim.start)));
+    let mut menu = root.clone();
+    menu.id = hd_intro_menu_id();
+    menu.name = "Intro".to_string();
+    menu.background = MenuBackground::VideoLoop {
+        asset: first_play.asset,
+        in_frame,
+        out_frame,
+        loop_forever: false,
+        mute_source: false,
+    };
+    menu.audio = (!asset.probe.audio.is_empty()).then_some(kinodisc_domain::MenuAudio {
+        asset: first_play.asset,
+        gain_db: 0.0,
+        fade_in_ms: 0,
+        fade_out_ms: 0,
+        loop_audio: false,
+    });
+    menu.motion_config = None;
+    menu.items.clear();
+    menu.transition = None;
+    menu.template = None;
+    menu.timing = kinodisc_domain::MenuTiming::default();
+    let mut button = root.buttons.first()?.clone();
+    button.id = kinodisc_domain::ButtonId::from_u128(0x6b69_6e6f_6469_7363_696e_7472_6f00_0002);
+    button.name = "Saltar intro".to_string();
+    button.rect = kinodisc_domain::LogicalRect {
+        x: 0.0,
+        y: 0.0,
+        w: f64::from(menu.canvas.width),
+        h: f64::from(menu.canvas.height),
+    };
+    button.thumbnail = None;
+    button.label = None;
+    button.motion_preview = None;
+    button.style_kind = kinodisc_domain::ButtonStyleKind::Hotspot;
+    button.nav_override = Default::default();
+    button.enabled = true;
+    button.action = if first_play.skippable {
+        ButtonAction::GotoMenu { menu: root.id }
+    } else {
+        ButtonAction::Noop
+    };
+    menu.buttons = vec![button];
+    Some(menu)
+}
+
+/// Ends the intro object in the root menu and sends an idle root menu to the
+/// intro or to Play All. `intro` is the intro object and whether it plays
+/// when the disc starts. First Play stays on the root menu object, as on the
+/// discs a PS4 plays fully: the root object plays the intro the first time
+/// it runs (`INTRO_SEEN_GPR` is 0 when the disc starts). With First Play on
+/// the intro object the PS4 refused fast-forward in every episode.
+fn wire_hd_intro_and_idle(
+    bdmv_root: &Path,
+    root_object: u16,
+    intro: Option<(u16, bool)>,
+    idle: IdleAction,
+) -> Result<(), RenderError> {
+    let menu_error = |error: kinodisc_hdmv::BdmvError| RenderError::Menu(error.to_string());
+    let path = bdmv_root.join("MovieObject.bdmv");
+    let mut movie_object = read_bdmv_file(&path)?;
+    let objects = kinodisc_hdmv::movie_objects(&movie_object).map_err(menu_error)?;
+    // Menu objects are `PlayPL(menu); JumpObject(self)`: swap the loop.
+    let ending = |object: u16, exit: &[HdmvCommand]| -> Result<Vec<HdmvCommand>, RenderError> {
+        let mut commands = objects
+            .get(usize::from(object))
+            .map(|(_, commands)| commands.clone())
+            .ok_or_else(|| RenderError::Menu(format!("objeto de menú {object} inexistente")))?;
+        if commands.last() != Some(&jump_object(u32::from(object))) {
+            return Err(RenderError::Menu(format!(
+                "el objeto de menú {object} no termina en su propio bucle"
+            )));
+        }
+        commands.pop();
+        commands.extend_from_slice(exit);
+        Ok(commands)
+    };
+    let intro_object = intro.map(|(object, _)| object);
+    let mut changes = Vec::new();
+    if let Some(intro) = intro_object {
+        let mut commands = vec![set_gpr(INTRO_SEEN_GPR, 1)];
+        commands.extend(ending(intro, &[jump_object(u32::from(root_object))])?);
+        changes.push((intro, commands));
+    }
+    let root_exit = match (idle, intro_object) {
+        (IdleAction::Intro, Some(intro)) => Some(vec![jump_object(u32::from(intro))]),
+        (IdleAction::PlayAll, _) => Some(vec![set_gpr(0, 0), jump_title(1)]),
+        _ => None,
+    };
+    let at_start = intro.filter(|(_, at_start)| *at_start);
+    if at_start.is_some() || root_exit.is_some() {
+        let mut commands = Vec::new();
+        if let Some((intro, _)) = at_start {
+            // `GPR < 1` runs the next command; otherwise it is skipped.
+            commands.push(HdmvCommand::new(
+                kinodisc_hdmv::OP_CMP_LT_IMM,
+                u32::from(INTRO_SEEN_GPR),
+                1,
+            ));
+            commands.push(jump_object(u32::from(intro)));
+        }
+        let own_loop = [jump_object(u32::from(root_object))];
+        commands.extend(ending(
+            root_object,
+            root_exit.as_deref().unwrap_or(&own_loop),
+        )?);
+        changes.push((root_object, commands));
+    }
+    if changes.is_empty() {
+        return Ok(());
+    }
+    for (object, commands) in &changes {
+        movie_object =
+            kinodisc_hdmv::replace_movie_object_commands(&movie_object, *object, commands)
+                .map_err(menu_error)?;
+    }
+    write_bdmv_file(&path, &movie_object)?;
+    let backup = bdmv_root.join("BACKUP/MovieObject.bdmv");
+    if backup.is_file() {
+        write_bdmv_file(&backup, &movie_object)?;
+    }
+    Ok(())
+}
+
+/// Title 1 (object 0, the whole series) goes back to the root menu when the
+/// series ends. A PS4 ignores it and leaves the disc; other players follow it.
+fn wire_title_one(bdmv_root: &Path, root_object: u16) -> Result<(), RenderError> {
+    let menu_error = |error: kinodisc_hdmv::BdmvError| RenderError::Menu(error.to_string());
+    let path = bdmv_root.join("MovieObject.bdmv");
+    let movie_object = read_bdmv_file(&path)?;
+    let objects = kinodisc_hdmv::movie_objects(&movie_object).map_err(menu_error)?;
+    let mut commands = objects
+        .first()
+        .map(|(_, commands)| commands.clone())
+        .ok_or_else(|| RenderError::Menu("MovieObject sin el objeto del título 1".to_string()))?;
+    let plays = |command: &HdmvCommand| {
+        matches!(
+            command.opcode(),
+            kinodisc_hdmv::OP_PLAY_PLAYLIST | kinodisc_hdmv::OP_PLAY_PLAYLIST_PM
+        )
+    };
+    if !commands.last().is_some_and(plays) {
+        return Err(RenderError::Menu(
+            "el objeto del título 1 no termina reproduciendo la serie".to_string(),
+        ));
+    }
+    commands.push(jump_object(u32::from(root_object)));
+    let movie_object = kinodisc_hdmv::replace_movie_object_commands(&movie_object, 0, &commands)
+        .map_err(menu_error)?;
+    write_bdmv_file(&path, &movie_object)?;
+    let backup = bdmv_root.join("BACKUP/MovieObject.bdmv");
+    if backup.is_file() {
+        write_bdmv_file(&backup, &movie_object)?;
+    }
+    Ok(())
 }
 
 async fn attach_native_hdmv_menu(
@@ -4990,7 +5359,7 @@ async fn attach_native_hdmv_menu(
     let stream_number = next_bdmv_number(&bdmv_root.join("STREAM"), "m2ts")?;
     let clip_number = next_bdmv_number(&bdmv_root.join("CLIPINF"), "clpi")?;
     let clip = stream_number.max(clip_number);
-    let duration_secs = 60.0;
+    let duration_secs = spec.duration_ms.max(1) as f64 / 1000.0;
     // FFmpeg 9 no longer synthesizes timestamps when stream-copying a raw
     // H.264 elementary stream ("first pts and dts value must be set"), which
     // made every native Blu-ray menu fall back to a menu-less disc. The
@@ -5009,7 +5378,7 @@ async fn attach_native_hdmv_menu(
             ig_pes_packets: ig_packets,
             width: spec.width,
             height: spec.height,
-            duration_ms: 60_000,
+            duration_ms: spec.duration_ms.max(1),
             clip_id: clip,
             playlist_id: playlist,
             expected_object,
@@ -5042,7 +5411,7 @@ async fn attach_hdmv_menu(
     // A finite clip loops through the MovieObject. Keeping it long enough
     // leaves the remote responsive without relying on decoder-specific still
     // input handling.
-    let duration_secs = 60.0;
+    let duration_secs = spec.duration_ms.max(1) as f64 / 1000.0;
     let dummy_path = work_dir.join("menu-pgs.sup");
     let dummy_pgs = dummy_pgs_for_slots(spec.width, spec.height, needed)
         .map_err(|error| RenderError::Menu(error.to_string()))?;
@@ -5304,7 +5673,10 @@ async fn encode_menu_video_with_transition(
         "-pix_fmt",
         "yuv420p",
         "-x264-params",
-        &format!("profile=high:keyint={keyint}:min-keyint={keyint}:scenecut=0:open-gop=0:bluray-compat=1"),
+        &format!(
+            "profile=high:keyint={keyint}:min-keyint={keyint}:scenecut=0:open-gop=0:bluray-compat=1{}",
+            menu_vbv(spec)
+        ),
     ]);
     if spec.interlaced {
         command.args(["-flags", "+ildct+ilme"]);
@@ -5314,6 +5686,18 @@ async fn encode_menu_video_with_transition(
     }
     command.args(["-f", menu_video_format(path)]).arg(path);
     run_menu_ffmpeg(command, path, "video").await
+}
+
+/// The menu clips' peak-rate limit (the disc maximum): a moving
+/// background or the HD intro must not exceed what the player reads.
+fn menu_vbv(spec: &MenuClipSpec) -> String {
+    if spec.maxrate_kbps == 0 || spec.vbv_bufsize_kbps == 0 {
+        return String::new();
+    }
+    format!(
+        ":vbv-maxrate={}:vbv-bufsize={}",
+        spec.maxrate_kbps, spec.vbv_bufsize_kbps
+    )
 }
 
 async fn encode_menu_video(
@@ -5335,7 +5719,8 @@ async fn encode_menu_video(
     // x264 downgrades all-black ultrafast output to Constrained Baseline unless
     // the profile is pinned in x264 itself. HDMV expects High profile.
     let x264_params = format!(
-        "profile=high:keyint={keyint}:min-keyint={keyint}:scenecut=0:open-gop=0:bluray-compat=1"
+        "profile=high:keyint={keyint}:min-keyint={keyint}:scenecut=0:open-gop=0:bluray-compat=1{}",
+        menu_vbv(spec)
     );
     let mut command = Command::from(kinodisc_toolchain::encoder_command(
         resolve_binary("ffmpeg"),
@@ -5447,6 +5832,9 @@ async fn encode_hd_menu_audio(
     if let Some(audio) = &spec.audio {
         if audio.loop_audio {
             command.args(["-stream_loop", "-1"]);
+        }
+        if audio.start_ms > 0 {
+            command.args(["-ss", &format!("{:.3}", audio.start_ms as f64 / 1000.0)]);
         }
         push_file_input(&mut command, &audio.path);
         command.args(["-t", &format!("{duration_secs:.3}")]);
@@ -5614,15 +6002,14 @@ fn attach_episode_playback(
             .episode(item.episode)
             .map(|episode| episode.post_action)
             .unwrap_or_default();
-        let after = match post {
-            kinodisc_domain::PostAction::NextEpisode => plan
-                .get(index + 1)
-                .map(|next| next.object)
-                .unwrap_or(root_object),
-            _ => root_object,
+        let exit = match (post, plan.get(index + 1)) {
+            (kinodisc_domain::PostAction::NextEpisode, Some(next)) => {
+                jump_object(u32::from(next.object))
+            }
+            _ => jump_object(u32::from(root_object)),
         };
         let (updated, object) =
-            kinodisc_hdmv::episodes::append_episode_object(&movie_object, playlist, after)
+            kinodisc_hdmv::episodes::append_episode_object_then(&movie_object, playlist, exit)
                 .map_err(menu_error)?;
         if object != item.object {
             return Err(RenderError::Menu(format!(
@@ -5890,6 +6277,7 @@ mod tests {
             chapter_marks: &chapter_marks,
             menu_objects: &menu_objects,
             episode_objects: &HashMap::new(),
+            intro_object: None,
         };
         let commands = hdmv_commands(&ButtonAction::PlayEpisode { episode }, &context);
         assert_eq!(commands.len(), 2);
@@ -5909,6 +6297,7 @@ mod tests {
             chapter_marks: &chapter_marks,
             menu_objects: &menu_objects,
             episode_objects: &episode_objects,
+            intro_object: None,
         };
         let audio = hdmv_commands(&ButtonAction::SetAudioTrack { track: 1 }, &context);
         // Five commands: read PSR2, then the audio change with the subtitle
@@ -5931,7 +6320,114 @@ mod tests {
     }
 
     #[test]
-    fn episode_buttons_use_their_own_episode_object_when_available() {
+    fn hd_intro_returns_to_the_menu_and_an_idle_menu_plays_it() {
+        use kinodisc_hdmv::native::{build_index_bdmv, build_movie_object};
+        let root = std::env::temp_dir().join(format!("kinodisc-hd-intro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("BACKUP")).unwrap();
+        let movie = build_movie_object(&[set_gpr(0, 0)]).unwrap();
+        let (movie, menu) = kinodisc_hdmv::append_menu_movie_object(&movie, 1).unwrap();
+        let (movie, intro) = kinodisc_hdmv::append_menu_movie_object(&movie, 2).unwrap();
+        assert_eq!((menu, intro), (1, 2));
+        for dir in [root.clone(), root.join("BACKUP")] {
+            std::fs::write(dir.join("MovieObject.bdmv"), &movie).unwrap();
+            std::fs::write(dir.join("index.bdmv"), build_index_bdmv(menu, menu)).unwrap();
+        }
+        wire_hd_intro_and_idle(&root, menu, Some((intro, true)), IdleAction::Intro).unwrap();
+        for dir in [root.clone(), root.join("BACKUP")] {
+            let objects =
+                kinodisc_hdmv::movie_objects(&std::fs::read(dir.join("MovieObject.bdmv")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                objects[1].1.last(),
+                Some(&jump_object(2)),
+                "idle menu -> intro"
+            );
+            // The root plays the intro the first time only.
+            assert_eq!(
+                objects[1].1[..3],
+                [
+                    HdmvCommand::new(kinodisc_hdmv::OP_CMP_LT_IMM, INTRO_SEEN_GPR.into(), 1),
+                    jump_object(2),
+                    kinodisc_hdmv::play_playlist(1),
+                ]
+            );
+            assert_eq!(
+                objects[2].1,
+                [
+                    set_gpr(INTRO_SEEN_GPR, 1),
+                    kinodisc_hdmv::play_playlist(2),
+                    jump_object(1)
+                ],
+                "intro -> menu"
+            );
+            let index = std::fs::read(dir.join("index.bdmv")).unwrap();
+            assert_eq!(
+                &index[82 + 6..82 + 8],
+                &1u16.to_be_bytes(),
+                "First Play stays on the root menu"
+            );
+            assert_eq!(
+                &index[94 + 6..94 + 8],
+                &1u16.to_be_bytes(),
+                "Top Menu = root"
+            );
+        }
+        // Play All on idle (no intro): the root menu ends in title 1 from mark 0.
+        for dir in [root.clone(), root.join("BACKUP")] {
+            std::fs::write(dir.join("MovieObject.bdmv"), &movie).unwrap();
+        }
+        wire_hd_intro_and_idle(&root, menu, None, IdleAction::PlayAll).unwrap();
+        let objects =
+            kinodisc_hdmv::movie_objects(&std::fs::read(root.join("MovieObject.bdmv")).unwrap())
+                .unwrap();
+        assert_eq!(objects[1].1[1..], [set_gpr(0, 0), jump_title(1)]);
+        assert_eq!(objects[2].1.last(), Some(&jump_object(2)), "untouched");
+        // An intro only for idle menus: the root does not play it first.
+        for dir in [root.clone(), root.join("BACKUP")] {
+            std::fs::write(dir.join("MovieObject.bdmv"), &movie).unwrap();
+        }
+        wire_hd_intro_and_idle(&root, menu, Some((intro, false)), IdleAction::Intro).unwrap();
+        let objects =
+            kinodisc_hdmv::movie_objects(&std::fs::read(root.join("MovieObject.bdmv")).unwrap())
+                .unwrap();
+        assert_eq!(
+            objects[1].1,
+            [kinodisc_hdmv::play_playlist(1), jump_object(2)],
+            "menu, then the intro when idle"
+        );
+        for dir in [root.clone(), root.join("BACKUP")] {
+            std::fs::write(dir.join("MovieObject.bdmv"), &movie).unwrap();
+        }
+        // A menu object that does not loop is refused rather than broken.
+        assert!(wire_hd_intro_and_idle(&root, 0, None, IdleAction::PlayAll).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn title_one_returns_to_the_menu_after_the_series() {
+        use kinodisc_hdmv::native::build_movie_object;
+        let root = std::env::temp_dir().join(format!("kinodisc-title-one-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("BACKUP")).unwrap();
+        let series = kinodisc_hdmv::play_playlist_mark(0, 10);
+        let movie = build_movie_object(&[series]).unwrap();
+        let (movie, menu) = kinodisc_hdmv::append_menu_movie_object(&movie, 1).unwrap();
+        for dir in [root.clone(), root.join("BACKUP")] {
+            std::fs::write(dir.join("MovieObject.bdmv"), &movie).unwrap();
+        }
+        wire_title_one(&root, menu).unwrap();
+        for dir in [root.clone(), root.join("BACKUP")] {
+            let objects =
+                kinodisc_hdmv::movie_objects(&std::fs::read(dir.join("MovieObject.bdmv")).unwrap())
+                    .unwrap();
+            assert_eq!(objects[0].1, [series, jump_object(menu.into())]);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn episode_buttons_jump_to_their_own_object_or_play_the_series() {
         let episode = EpisodeId::from_u128(7);
         let mut episode_marks = HashMap::new();
         episode_marks.insert(episode, 3);
@@ -5945,13 +6441,11 @@ mod tests {
             chapter_marks: &chapter_marks,
             menu_objects: &menu_objects,
             episode_objects: &episode_objects,
+            intro_object: None,
         };
         let gpr = kinodisc_hdmv::episodes::EPISODE_MARK_GPR as u32;
         let play = hdmv_commands(&ButtonAction::PlayEpisode { episode }, &context);
-        assert_eq!(play[0].opcode(), kinodisc_hdmv::OP_SET_GPR);
-        assert_eq!((play[0].dst, play[0].src), (gpr, 0));
-        assert_eq!(play[1].opcode(), kinodisc_hdmv::OP_JUMP_OBJECT);
-        assert_eq!(play[1].dst, 9);
+        assert_eq!(play, vec![set_gpr(gpr as u16, 0), jump_object(9)]);
         // Chapter 3 of the episode is mark 5 of the movie, mark 2 of the
         // episode playlist.
         let chapter = hdmv_commands(
@@ -5962,7 +6456,16 @@ mod tests {
             &context,
         );
         assert_eq!((chapter[0].dst, chapter[0].src), (gpr, 2));
-        assert_eq!(chapter[1].dst, 9);
+        assert_eq!(chapter[1], jump_object(9));
+        // Without its own object (an episode that goes on to the next one)
+        // the button plays the whole series from the episode's mark.
+        let none = HashMap::new();
+        let context = HdMenuContext {
+            episode_objects: &none,
+            ..context
+        };
+        let play = hdmv_commands(&ButtonAction::PlayEpisode { episode }, &context);
+        assert_eq!(play, vec![set_gpr(0, 3), jump_title(1)]);
     }
 
     #[test]
@@ -6064,6 +6567,7 @@ mod tests {
                 chapter_marks: &chapter_marks,
                 menu_objects: &menu_objects,
                 episode_objects: &HashMap::new(),
+                intro_object: None,
             },
         )
         .expect("ig stream");
@@ -6127,6 +6631,7 @@ mod tests {
                         chapter_marks: &chapter_marks,
                         menu_objects: &menu_objects,
                         episode_objects: &HashMap::new(),
+                        intro_object: None,
                     },
                 )
                 .unwrap_or_else(|error| panic!("{}: {error:?}", template.name));

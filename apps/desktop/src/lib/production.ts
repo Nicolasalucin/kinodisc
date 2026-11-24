@@ -44,10 +44,13 @@ export async function compositeProjectMenus(
         await previewForAsset(project, button.thumbnail.asset, shared, warnings, false);
         await previewForFrame(project, button.thumbnail, shared, warnings);
       }
+      // Same rule as the encoder (compose.rs composes_motion): a menu left
+      // with a motion setting but no moving card is encoded still, so it is
+      // composed whole (1.3 QA: the cards were lost).
       const motion =
         menu.background.kind === "videoLoop" ||
-        Boolean(menu.motionConfig) ||
-        menu.buttons.some((button) => Boolean(button.motionPreview && button.thumbnail));
+        (Boolean(menu.motionConfig) &&
+          menu.buttons.some((button) => Boolean(button.motionPreview && button.thumbnail)));
       if (motion) {
         const exported = await exportMotionMenu(
           menu,

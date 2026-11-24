@@ -71,7 +71,7 @@
     </p>
   {/if}
   {#if projectStore.jobHistory.length === 0}
-    <p class="px-2 py-1 text-[11px] text-slate-600">
+    <p class="px-2 py-1 text-[11px] text-slate-500">
       {projectStore.jobHistoryBusy
         ? t("Cargando historial…")
         : t("Todavía no hay trabajos de producción registrados.")}

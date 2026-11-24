@@ -629,7 +629,7 @@
         <button
           type="button"
           onclick={togglePause}
-          class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-cyan-500 text-slate-950 transition hover:bg-cyan-400"
+          class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-cyan-500 text-[#ffffff] transition hover:bg-cyan-600"
         >
           {isPlaying ? "❚❚" : "▶"}
         </button>
@@ -681,7 +681,7 @@
       <button
         type="button"
         onclick={activateFocus}
-        class="flex h-10 w-10 items-center justify-center rounded-full bg-cyan-500 text-[11px] font-black text-slate-950 transition hover:bg-cyan-400"
+        class="flex h-10 w-10 items-center justify-center rounded-full bg-cyan-500 text-[11px] font-black text-[#ffffff] transition hover:bg-cyan-600"
         title={t("OK")}
       >
         {t("OK")}
@@ -809,7 +809,7 @@
                   type="button"
                   onclick={() => void startQueue(episodes.map((episode) => ({ episodeId: episode.id })))}
                   disabled={episodes.length === 0 || playbackSupport?.supported === false}
-                  class="mt-4 rounded-xl bg-cyan-500 px-4 py-2 text-xs font-bold text-slate-950 transition hover:bg-cyan-400 disabled:opacity-40"
+                  class="mt-4 rounded-xl bg-cyan-500 px-4 py-2 text-xs font-bold text-[#ffffff] transition hover:bg-cyan-600 disabled:opacity-40"
                 >
                   {t("Reproducir todo")}
                 </button>
@@ -924,7 +924,7 @@
             <button
               type="button"
               onclick={activateFocus}
-              class="absolute left-1/2 top-1/2 flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-cyan-500 text-[12px] font-black text-slate-950 shadow-[0_0_0_6px_rgba(6,182,212,0.12),0_10px_20px_rgba(6,182,212,0.25)] transition hover:bg-cyan-400"
+              class="absolute left-1/2 top-1/2 flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-cyan-500 text-[12px] font-black text-[#ffffff] shadow-[0_0_0_6px_rgba(6,182,212,0.12),0_10px_20px_rgba(6,182,212,0.25)] transition hover:bg-cyan-600"
             >
               {t("OK")}
             </button>

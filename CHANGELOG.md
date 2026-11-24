@@ -1,5 +1,66 @@
 # Changelog
 
+## 1.3.0 nightly — 2026-11-23
+
+**Nightly build**: new and not fully tested. The navigation was checked on a PS4 with five test discs; menus on other players, the CLI project commands and the long GOPs on Blu-ray players were only checked by the tests and the disc verifier. Keep 1.2.6 for discs that must work the first time. The app's update check does not offer nightly builds.
+
+### Known limitations (PS4, AVCHD)
+
+- An episode set to **return to the menu** cannot be fast-forwarded when it is started from the menu. Episodes that go on to the next one (the default) can, and R1 moves to the next episode.
+- When the last episode ends, the PS4 goes to its home screen instead of the disc menu. The disc asks to go back to the menu; the PS4 does not do it.
+- The wait before the menu plays the intro counts from when the menu appears: moving between buttons does not restart it (the disc cannot see the remote).
+
+### Added
+
+- **Intro on AVCHD and Blu-ray discs**, and a way to pick one in the app: **Intro** next to **Background** and **Music** on the main menu chooses the video; **When the disc starts** plays it before the menu (OK skips it), and the menu can also play it when nobody chooses anything (or only then). Until now only DVD-Video played an intro, and there was no button to set one. On AVCHD and Blu-ray the wait counts from when the menu appears (the disc cannot see the remote), so it is at least a minute.
+- **If nobody chooses anything** on the main menu (after the menu's duration): stay on the menu, **play all**, or **play the intro and come back to the menu**. Every format (it replaces the DVD-only **Automatic playback**; old projects keep it as "play all").
+- **Templates for long series**: *Episode list* (12 episodes a page), *Season index* (18) and *Compact index* (24), text only. Every template still makes as many pages as the episodes need.
+- **Content type** in the production window (film, animation, grainy home video): tunes the H.264 encoder for cartoons and anime (x264 `animation`) or keeps the grain (x264 `grain`); film keeps the encoder defaults, which measured best. Remembered per project.
+- **CPU maximum (x264 slower)** encoder option. Each encoder option now says what it saves against CPU fast for the same quality (measured: medium ~5 %, slow ~8 %, slower ~10 %; a 2-second GOP adds ~5 % on film and ~15 % on animation, 3 seconds ~7 % and ~20 %).
+- **Animate all thumbnails** (Motion tab, or `kinodisc-cli project menu <project.json> --animate on`): every episode card on every menu page loops 10 seconds of its episode.
+- **Try filters and options** in *Test the quality*: the same 10 seconds are encoded with each noise-reduction level and, on AVCHD and Blu-ray, each content type, encoder preset and GOP, with an estimate of the bits each saves for the same quality against the current settings and the picture of each one to compare.
+- **GOP of 1, 2 or 3 seconds** for AVCHD and Blu-ray (Inspector, or `kinodisc-cli project gop <project.json> 2`): a full picture every 2 seconds instead of every second gives +0.2 to +0.9 dB at 300 kb/s for the same size, and a PS4 plays it on AVCHD discs (on a Blu-ray it gets a warning: the rule asks for 1 s). **3 seconds is very experimental**: not tested on any player.
+- **The CLI can build a whole disc**: `kinodisc-cli project new <project.json> <videos|folder> [--mode] [--capacity] [--template]`, `project add` (the template is applied again with the new episodes), `project menu` (`--template`, `--background` image or video, `--music`, `--title`, `--idle wait|play-all|intro`, `--idle-seconds`), `project intro <video> [--idle-only]`, `project subtitles <project.json> <files|folder>` (text subtitles matched to episodes by file name, language from the name), `project episodes --after next|menu|stop` and `project show`. It uses the same code as the app. `render` takes `--content film|animation|grain` and `--encoder cpu-slower`.
+
+### Changed
+
+- **Better H.264 quality for the same size** (AVCHD and Blu-ray, CPU encoder): two passes, B-frames (3, strict pyramid, as Blu-ray allows), a one-second GOP, up to 4 reference frames at 1080 lines, and the content-type tuning. Hardware encoders get B-frames where the driver supports them.
+- **Progressive video on 480i/576i AVCHD** is coded as progressive frames flagged interlaced, instead of fields: sharper for the same bits. Truly interlaced sources stay interlaced.
+- **SD AVCHD is tagged with SD colours** (BT.601) instead of HD ones.
+- **DVD-Video picks half resolution (Half-D1) by bitrate, not by length**: below 1.8 Mb/s of video, where half resolution measured sharper than full resolution on film; above it, full resolution. Before, any disc over 2.5 hours went to half resolution, even on a DVD-9 with bits to spare.
+- **AVCHD on DVD media is capped at 18 Mb/s**, the AVCHD limit for DVD discs (24 Mb/s is the memory-card figure).
+- **Episodes go on to the next one** by default (new episodes; the Inspector's *When it ends* changes it). On AVCHD and Blu-ray such an episode plays from its place in the whole series, so the player's next-chapter key (R1 on a PS4) reaches the next episode, and fast-forward works. An episode set to return to the menu plays on its own and comes back. (Giving every episode its own disc title was tried: a PS4 calls that disc "Unknown disc".)
+
+### Fixed
+
+- **Animated DVD menus could stop near their last frames** (about one try in five in testing). The menu now ends with its own last frame instead of a time limit, and a watchdog stops FFmpeg if the picture stops advancing for 75 seconds and encodes the menu again (up to four tries). In the final tests no menu stopped in 30 tries. Each menu now has exactly its frames (900 for 30 s in NTSC).
+- **Menus left still after animating the thumbnails came out blank** (*Keep them still*): the thumbnails and titles are on the disc again.
+- The **Disc tools** window takes the keyboard focus when it opens and keeps Tab inside, as the other dialogs do.
+- **DVD menus with moving thumbnails never finished**: each card looped its whole episode to keep 10 seconds; it now reads only those seconds and repeats them a fixed number of times, and a stalled menu encode is stopped and tried again.
+- **Moving thumbnails were hidden on the disc** when the menu used a template: its background was drawn above the cards. It now stays under them (only the texts go on top).
+- **The verifier counted the menu stream as subtitles** on AVCHD and Blu-ray (*Subtitles* passed on discs without any); a disc without subtitles now shows it as skipped.
+- **Generate ISO on AVCHD and Blu-ray asked for DVD tools** (DVDAuthor, Spumux) and the Linux burn tools when only making an image.
+- **The GOP warnings** (3 seconds, or 2 on a Blu-ray) now show in the app's review, not only in `project show`.
+- `project subtitles` warns when not every episode has the same subtitle tracks: AVCHD and Blu-ray discs then carry none.
+- Accessibility: the media tabs, the episode strip, the asset rows (no button inside a button), the output-folder field's label, and the contrast of all secondary text (4.5:1 in both themes).
+- The status bar no longer says DVD tools are missing on an AVCHD or Blu-ray project.
+
+### Measured
+
+Same size, 60-second film and animation clips, SSIM in dB (higher is better), 1.2.6 against the final 1.3.0 settings (x264 `slow`, single runs):
+
+| Format | Video | 1.2.6 | 1.3.0 |
+| --- | --- | --- | --- |
+| 480i AVCHD | animation 400 kb/s | 14.3 | 15.7 |
+| 480i AVCHD | film 1500 kb/s | 15.6 | 16.8 |
+| 576i AVCHD | film 1500 kb/s | 15.3 | 16.5 |
+| 720p | film 5000 kb/s | 18.7 | 19.3 |
+| 1080i AVCHD | film 3000 kb/s | 15.3 | 16.2 |
+| 1080p Blu-ray | film 3000 kb/s | 15.7 | 16.2 |
+| 1080p Blu-ray | animation 8000 kb/s | 22.4 | 24.2 |
+
+VMAF rises on every row too (+0.7 to +5.8). For the same quality that is roughly 20–30 % fewer bits on SD and 15–35 % on HD. The encode lands within 2.5 % of the planned size and takes 1.1–1.4× the time. `slower` adds only 0.02–0.09 dB for 22–39 % more time. Options that measured worse were left out: a light denoise for animation, `aq-mode=3` for film, 6 reference frames on SD (no change), and on MPEG-2 `qp_rd`/`cbp_rd`, `dark_mask`, denoise and a lower DC precision (`qcomp 0.7` gained under 0.15 dB). On a noisy source the picture fixes' light denoise is neutral and the strong one loses VMAF, so neither is applied automatically.
+
 ## 1.2.6 — 2026-11-22
 
 ### Fixed

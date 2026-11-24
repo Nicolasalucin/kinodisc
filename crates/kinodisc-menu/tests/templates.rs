@@ -32,9 +32,10 @@ fn episode_buttons(menus: &[kinodisc_domain::Menu]) -> Vec<&kinodisc_domain::Men
 }
 
 #[test]
-fn all_fifteen_templates_paginate_1_6_12_24() {
+fn all_templates_paginate_1_6_12_24() {
     let templates = all_templates();
-    assert_eq!(templates.len(), 15);
+    // 15 until 1.2.6; 1.3 adds the 12/18/24-per-page lists.
+    assert_eq!(templates.len(), 18);
     for template in templates {
         for count in [1usize, 6, 12, 24] {
             let project = project_with_episodes(count);
@@ -305,4 +306,103 @@ fn a_single_episode_card_is_centred() {
             template.id
         );
     }
+}
+
+#[test]
+fn page_buttons_stay_inside_the_safe_area_and_off_the_cards() {
+    // They sat 18 px from the edges (W_BUTTON_OUTSIDE_SAFE_AREA, QA 1.3).
+    for template in all_templates() {
+        let project = project_with_episodes(40);
+        let result = apply_template(&project, template.id).expect("template apply");
+        for menu in result.menus.iter().filter(|menu| menu.template.is_some()) {
+            let safe = f64::from(menu.canvas.safe_margin_px);
+            let width = f64::from(menu.canvas.width);
+            let height = f64::from(menu.canvas.height);
+            let pages = menu
+                .buttons
+                .iter()
+                .filter(|button| button.name.contains('‹') || button.name.contains('›'));
+            for page in pages {
+                let r = page.rect;
+                assert!(
+                    r.x >= safe
+                        && r.y >= safe
+                        && r.x + r.w <= width - safe
+                        && r.y + r.h <= height - safe,
+                    "{}: «{}» at {r:?} leaves the safe area",
+                    template.name,
+                    page.name
+                );
+                for card in menu
+                    .buttons
+                    .iter()
+                    .filter(|button| matches!(button.action, ButtonAction::PlayEpisode { .. }))
+                {
+                    let c = card.rect;
+                    let apart = c.y + c.h <= r.y || c.x + c.w <= r.x || c.x >= r.x + r.w;
+                    assert!(
+                        apart,
+                        "{}: «{}» covers «{}»",
+                        template.name, page.name, card.name
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_thumbnail_can_be_animated_at_once() {
+    let mut project = project_with_episodes(8);
+    let result = apply_template(&project, MenuTemplateId::CinemaDark).expect("template apply");
+    project.menus = result.menus;
+    project.root_menu = result.root_menu;
+    let with_thumbnails = project
+        .menus
+        .iter()
+        .flat_map(|menu| menu.buttons.iter())
+        .filter(|button| button.thumbnail.is_some())
+        .count();
+    assert!(with_thumbnails > 0, "cinema-dark has episode thumbnails");
+    let root_duration = project.menu(project.root_menu).unwrap().timing.duration_ms;
+    let errors = |project: &kinodisc_domain::Project| {
+        project
+            .validate()
+            .into_iter()
+            .filter(|diagnostic| diagnostic.is_error())
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>()
+    };
+    let errors_before = errors(&project);
+    assert_eq!(
+        kinodisc_menu::set_all_thumbnail_motion(&mut project, true, 10_000),
+        with_thumbnails
+    );
+    for menu in &project.menus {
+        let animated = menu
+            .buttons
+            .iter()
+            .any(|button| button.motion_preview.is_some());
+        assert_eq!(animated, menu.motion_config.is_some(), "{}", menu.name);
+        for button in &menu.buttons {
+            assert_eq!(button.thumbnail.is_some(), button.motion_preview.is_some());
+        }
+    }
+    // The page keeps its duration (the root menu's idle wait).
+    let root = project.menu(project.root_menu).unwrap();
+    assert_eq!(
+        root.motion_config.as_ref().unwrap().duration_ms,
+        root_duration.max(1_000)
+    );
+    // Animating adds no error to the project.
+    assert_eq!(errors(&project), errors_before);
+    assert_eq!(
+        kinodisc_menu::set_all_thumbnail_motion(&mut project, false, 10_000),
+        with_thumbnails
+    );
+    assert!(project
+        .menus
+        .iter()
+        .flat_map(|menu| menu.buttons.iter())
+        .all(|button| button.motion_preview.is_none()));
 }

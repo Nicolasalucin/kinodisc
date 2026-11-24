@@ -579,12 +579,12 @@
                 type="button"
                 onclick={togglePlay}
                 disabled={!videoSrc}
-                class="flex h-6 w-6 items-center justify-center rounded-full bg-cyan-500 text-slate-950 transition hover:bg-cyan-400 disabled:opacity-40"
+                class="flex h-6 w-6 items-center justify-center rounded-full bg-cyan-500 text-[#ffffff] transition hover:bg-cyan-600 disabled:opacity-40"
               >
                 {playing ? "❚❚" : "▶"}
               </button>
               <span class="font-mono">{formatMs(currentTimeMs)}</span>
-              <span class="text-slate-600">/</span>
+              <span class="text-slate-500">/</span>
               <span class="font-mono text-slate-500">{formatMs(sourceDuration)}</span>
               <button
                 type="button"
@@ -706,7 +706,7 @@
                 <option value={mode.id}>{t(mode.label)}</option>
               {/each}
             </select>
-            <span class="mt-1 block text-[11px] text-slate-600">{scaleHint}</span>
+            <span class="mt-1 block text-[11px] text-slate-500">{scaleHint}</span>
           </label>
           <label class="rounded-xl border border-slate-800 p-2.5">
             <span class="ui-section-title mb-1 block">{t("Pista de audio")}</span>
@@ -785,7 +785,7 @@
           <ul class="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto pr-0.5">
             {#each episode.chapters as chapter, index}
               <li class="flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950/60 px-2 py-1.5">
-                <span class="w-4 text-center font-mono text-[11px] text-slate-600">{index + 1}</span>
+                <span class="w-4 text-center font-mono text-[11px] text-slate-500">{index + 1}</span>
                 <button
                   type="button"
                   onclick={() => seek(chapterSourceTime(chapter))}
@@ -800,7 +800,7 @@
                   <button
                     type="button"
                     onclick={() => removeChapter(chapter)}
-                    class="rounded px-1 text-[11px] text-slate-600 transition hover:bg-rose-500/10 hover:text-rose-300"
+                    class="rounded px-1 text-[11px] text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-300"
                     title={t("Eliminar capítulo")}
                   >
                     ✕

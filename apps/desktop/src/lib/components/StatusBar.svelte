@@ -16,7 +16,14 @@
   );
   const fill = $derived(Math.min(100, Math.max(0, projectStore.planPercent)));
   const tooFull = $derived(Boolean(plan && !plan.feasible));
-  const missing = $derived(projectStore.toolsReport?.missingRequired ?? []);
+  // An AVCHD/Blu-ray project never runs DVDAuthor or Spumux (the production
+  // window applies the same rule).
+  const missing = $derived(
+    (projectStore.toolsReport?.missingRequired ?? []).filter(
+      (tool) =>
+        !(projectStore.project?.disc.mode === "avchd" && (tool === "dvdauthor" || tool === "spumux")),
+    ),
+  );
   const discLabel = $derived(
     project
       ? project.disc.capacity === "bd25" || project.disc.capacity === "bd50"

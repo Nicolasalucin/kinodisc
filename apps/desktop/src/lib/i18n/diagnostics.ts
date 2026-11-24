@@ -47,9 +47,9 @@ const PATTERNS: PatternRule[] = [
     values: (match) => ({ episode: match[1] }),
   },
   {
-    key: "Se activó Half-D1 automáticamente: duración {duration} ms y bitrate calculado {bitrate} kbps.",
-    pattern: /duración (\d+) ms y bitrate calculado (\d+) kbps/,
-    values: (match) => ({ duration: match[1], bitrate: match[2] }),
+    key: "Se activó Half-D1 automáticamente: con {bitrate} kbps de vídeo, media resolución se ve mejor que la completa (por debajo de {threshold} kbps).",
+    pattern: /Se activó Half-D1 automáticamente: con (\d+) kbps de vídeo, .*por debajo de (\d+) kbps/,
+    values: (match) => ({ bitrate: match[1], threshold: match[2] }),
   },
   {
     key: "El bitrate calculado {bitrate} kbps supera el máximo {max} kbps; el disco quedará por debajo del objetivo de llenado.",

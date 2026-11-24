@@ -231,7 +231,7 @@
             {/each}
           </div>
 
-          <div class="mt-2 flex justify-between border-t border-slate-800 pt-1 font-mono text-[11px] text-slate-600">
+          <div class="mt-2 flex justify-between border-t border-slate-800 pt-1 font-mono text-[11px] text-slate-500">
             <span>00:00</span>
             <span>25%</span>
             <span>50%</span>
@@ -357,7 +357,7 @@
                   <button
                     type="button"
                     onclick={() => projectStore.removeEpisodeAudioTrack(episode.id, index)}
-                    class="ml-auto rounded px-1 text-[11px] text-slate-600 transition hover:bg-rose-500/10 hover:text-rose-300"
+                    class="ml-auto rounded px-1 text-[11px] text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-300"
                     title={t("Eliminar pista")}
                   >
                     ✕
@@ -478,13 +478,13 @@
                   <button
                     type="button"
                     onclick={() => projectStore.removeEpisodeSubtitleTrack(episode.id, index)}
-                    class="ml-auto rounded px-1 text-[11px] text-slate-600 transition hover:bg-rose-500/10 hover:text-rose-300"
+                    class="ml-auto rounded px-1 text-[11px] text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-300"
                     title={t("Eliminar subtítulo")}
                   >
                     ✕
                   </button>
                 </div>
-                <p class="mt-1 truncate font-mono text-[11px] text-slate-600" title={track.sourcePath ?? ""}>
+                <p class="mt-1 truncate font-mono text-[11px] text-slate-500" title={track.sourcePath ?? ""}>
                   {track.sourcePath ? basename(track.sourcePath) : `stream interno ${track.sourceStream}`}
                 </p>
                 <div class="mt-1.5 grid gap-2 sm:grid-cols-[minmax(0,1fr)_82px]">

@@ -71,7 +71,9 @@ pub const HDMV_MENU_PTS_90K: u64 = 54_000_000;
 /// 11 (1.2.4): AVCHD 480i/576i fit on the display canvas and tag SAR with `/`.
 /// 13 (1.3.0): x264 two-pass, B-frames, 1 s GOP, PsF on SD, BT.601, content tune.
 /// 14 (1.3.2): one resample (`fit_filter`), SATD in DVD pass 2, DVD maxrate.
-const ENCODER_REV: u32 = 14;
+/// 15 (1.3.4): DVD lowers the quantiser floor when the first pass cannot
+/// spend the bitrate.
+const ENCODER_REV: u32 = 15;
 
 /// Upper bound for a single auxiliary FFmpeg invocation (menu clip, menu audio
 /// or subtitle extraction). Encoding jobs have their own progress timeouts.

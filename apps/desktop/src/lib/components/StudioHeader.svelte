@@ -208,13 +208,13 @@
             <div class="disc-fields grid gap-2">
         <!-- Always shown: from a Blu-ray capacity, choosing DVD-Video goes back to a DVD-5. -->
         <span class="ui-label mb-0">{t("Formato")}</span>
-<select class="ui-input" value={project.disc.mode} title={t("Formato de autoría")}
+<select class="ui-input" value={project.disc.mode} aria-label={t("Formato de autoría")} title={t("Formato de autoría")}
           onchange={(event) => setFormat(event.currentTarget.value as "dvdVideo" | "avchd")}>
           <option value="dvdVideo">{t("DVD-Video")}</option>
           <option value="avchd">{isBluRayCapacity ? t("Blu-ray HD") : t("AVCHD (HD en DVD)")}</option>
         </select>
         <span class="ui-label mb-0">{t("Capacidad")}</span>
-<select class="ui-input" value={project.disc.capacity} title={t("Capacidad del disco")}
+<select class="ui-input" value={project.disc.capacity} aria-label={t("Capacidad del disco")} title={t("Capacidad del disco")}
           onchange={(event) => projectStore.setDiscCapacity(event.currentTarget.value as "dvd5" | "dvd9" | "bd25" | "bd50")}>
           <option value="dvd5">{t("DVD-5 · 4,7 GB")}</option>
           <option value="dvd9">{t("DVD-9 · 8,5 GB")}</option>
@@ -223,7 +223,7 @@
         </select>
         {#if !isAvchd}
           <span class="ui-label mb-0">{t("Sistema de TV")}</span>
-<select class="ui-input" value={project.disc.standard} title={t("Estándar de televisión")}
+<select class="ui-input" value={project.disc.standard} aria-label={t("Estándar de televisión")} title={t("Estándar de televisión")}
             onchange={(event) => projectStore.setStandard(event.currentTarget.value as "ntsc" | "pal")}>
             <option value="pal">{t("PAL")}</option>
             <option value="ntsc">{t("NTSC")}</option>
@@ -231,7 +231,7 @@
         {/if}
         {#if !isAvchd || isAvchdSd}
           <span class="ui-label mb-0">{t("Pantalla")}</span>
-<select class="ui-input" value={project.disc.aspect} title={t("Relación de aspecto")}
+<select class="ui-input" value={project.disc.aspect} aria-label={t("Relación de aspecto")} title={t("Relación de aspecto")}
             onchange={(event) => projectStore.setAspect(event.currentTarget.value as "fourThree" | "sixteenNine")}>
             <option value="sixteenNine">16:9</option>
             <option value="fourThree">4:3</option>
@@ -240,7 +240,7 @@
         {#if projectStore.expertMode}
           {#if project.disc.mode === "dvdVideo"}
             <span class="ui-label mb-0">{t("Región")}</span>
-<select class="ui-input" value={project.disc.regionMask} title={t("Región DVD")}
+<select class="ui-input" value={project.disc.regionMask} aria-label={t("Región DVD")} title={t("Región DVD")}
               onchange={(event) => projectStore.setRegionMask(Number(event.currentTarget.value))}>
               <option value={0}>{t("Región libre")}</option>
               <option value={1}>{t("Región 1")}</option>

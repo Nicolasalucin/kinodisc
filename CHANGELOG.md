@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.3.4 nightly — 2026-11-25
+
+**Nightly build**: new and not fully tested. No DVD or Blu-ray player has played these discs.
+
+### Changed
+
+- **A DVD uses the room it has when the video is easy to compress.** Animation and other clean video stopped far below the planned bitrate (2,400 kb/s of a planned 4,500 on an excerpt of Big Buck Bunny), so a disc with room to spare came out half empty and below the quality it could have had. When the first pass shows that, Kinodisc now runs it again and encodes with a finer quantiser. Measured on that excerpt with the same FFmpeg arguments: 4,351 kb/s and VMAF NEG 95.35 instead of 94.20, with the worst frames better too. Video that already reaches its bitrate is encoded as before. Still two passes; such episodes take a little longer and are encoded again.
+
+### Added
+
+- `--help` after any command of `kinodisc-cli` (`kinodisc-cli render --help`) shows how to use it. It answered "unknown option".
+
+### Fixed
+
+- The lists of the disc bar (format, size, TV system, screen, region) have a name for screen readers; they only had a tooltip.
+
 ## 1.3.3 nightly — 2026-11-25
 
 **Nightly build**: new and not fully tested. No DVD or Blu-ray player has played these discs.

@@ -83,17 +83,23 @@ The DVD-Video software encode path is tuned deliberately:
 
 - Scaling uses `flags=lanczos` and resamples the picture ONCE, straight to
   the stored frame (`kinodisc_toolchain::fit_filter`, shared with AVCHD).
-  Never fit on a square-pixel canvas and squeeze afterwards: that second
-  resample cost about 10 VMAF NEG at 2,000 kb/s (QA 1.3.2, `m-132`) and was
-  the whole gap to DVDStyler.
+  Never fit on a square-pixel canvas and squeeze afterwards: that left a
+  16:9 picture 719 pixels wide with a black column. On one film excerpt
+  that cost about 15 VMAF, and scored against a reference placed the same
+  way the loss disappeared (QA `rel-141`, `cmp-141`): it was geometry, not
+  sharpness, and it explains the VMAF and SSIM gap to DVDStyler of `m-132`.
 - RD/Trellis: pass 2 uses `-mbd rd -cmp satd -subcmp satd -trellis 2` (SATD
   comparison measured equal to RD comparison at half the time). Pass 1 is
   a light statistics pass: fast by default (`-mbd simple -b_strategy 0`, no
   `-cmp/-subcmp`, `-trellis 0`) and, with `DvdVideoConfig.full_first_pass`,
   the 1.3.0 one (`-mbd rd -b_strategy 2`). Always two passes: they give the
   bits to the hard scenes (QA 1.3.1: one pass lost 1.2 VMAF there). The fast
-  pass joins the cache key as `:p1fast`. `qmin 1` is not used: it moves bits
-  from the hard scenes to the easy ones.
+  pass joins the cache key as `:p1fast`. `qmin 1` is not a fixed setting: it
+  moves bits from the hard scenes to the easy ones. It is used only when the
+  first pass spends under 85 % of the asked bitrate (`SPEND_BELOW_PERCENT`,
+  read from the pass log): then the first pass runs again and both passes
+  use `-qmin 1 -lmin 118`, so easy video uses the room the disc has (QA
+  `cmp-141`).
 - Episodes with the same source bytes share one cached encode: the second
   title gets its own copy (`distinct_episode_file`), because DVDAuthor points
   titles that name one file at the same cells. Quality options kept after timing them:

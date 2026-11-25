@@ -11,7 +11,7 @@ use kinodisc_domain::{
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str = "\
+pub(crate) const USAGE: &str = "\
 Uso:
   kinodisc-cli project new <proyecto.json> <vídeo|carpeta> [...] [--name <nombre>]
         [--mode dvd|avchd] [--standard ntsc|pal] [--aspect 16:9|4:3]

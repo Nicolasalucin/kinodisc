@@ -341,7 +341,19 @@ impl DvdEncoder {
         let pass1 = build_pass1_args(request);
         run_stage(&self.ffmpeg, self.cpu, &pass1, "pass1", progress.as_ref()).await?;
 
-        let pass2 = build_pass2_args(request);
+        // Easy video on a disc with room: the first pass could not spend the
+        // bitrate, so both passes run with the lower quantiser floor. Still
+        // two passes: the first one is done again, not skipped.
+        let spend = first_pass_percent(request).is_some_and(|share| share < SPEND_BELOW_PERCENT);
+        if spend {
+            let pass1 = with_low_quant_floor(pass1);
+            run_stage(&self.ffmpeg, self.cpu, &pass1, "pass1", progress.as_ref()).await?;
+        }
+
+        let mut pass2 = build_pass2_args(request);
+        if spend {
+            pass2 = with_low_quant_floor(pass2);
+        }
         run_stage(&self.ffmpeg, self.cpu, &pass2, "pass2", progress.as_ref()).await?;
 
         let mut audio_ac3 = Vec::with_capacity(request.audio_tracks.len());
@@ -766,6 +778,72 @@ pub fn build_pass1_args(request: &EncodeRequest) -> Vec<String> {
         null_sink().to_string(),
     ]);
     args
+}
+
+/// A first pass under this share of the asked bitrate means that the default
+/// quantiser floor (2) cannot spend it: easy video on a disc with room.
+/// Measured on film excerpts (QA `cmp-141`): first passes at 46, 61 and 79 %
+/// ended at 40, 53 and 73 %; with the lower floor they reached 76 to 100 %,
+/// VMAF NEG rose 0.6 to 1.2 and the worst frames stayed equal or better. A
+/// first pass at 97 % is left alone: there the lower floor took 0.9 from the
+/// worst frames, and so it did at 86 and 90 % (1.9 and 3.3 lower for 0.1 and
+/// 0.4 on the mean, QA `fix-134`).
+const SPEND_BELOW_PERCENT: u64 = 85;
+
+/// A quantiser floor of 1 (`-lmin` is the same floor in lambda units).
+const LOW_QUANT_FLOOR: [&str; 4] = ["-qmin", "1", "-lmin", "118"];
+
+/// The pass arguments with the lower quantiser floor.
+pub fn with_low_quant_floor(mut args: Vec<String>) -> Vec<String> {
+    let at = args
+        .iter()
+        .position(|arg| arg == "-pass")
+        .unwrap_or(args.len());
+    args.splice(at..at, LOW_QUANT_FLOOR.iter().map(|arg| arg.to_string()));
+    args
+}
+
+/// The statistics file FFmpeg writes for the video stream of a two-pass encode.
+fn passlog_file(request: &EncodeRequest) -> PathBuf {
+    let mut name = request.passlog().into_os_string();
+    name.push("-0.log");
+    PathBuf::from(name)
+}
+
+/// What the first pass spent, as a percentage of the asked video bitrate
+/// (`None` when its statistics cannot be read: then nothing changes).
+fn first_pass_percent(request: &EncodeRequest) -> Option<u64> {
+    let log = std::fs::read_to_string(passlog_file(request)).ok()?;
+    first_pass_percent_of(&log, request.video.standard, request.video.video_kbps)
+}
+
+/// One line per frame: `in:0 out:0 type:1 q:236 itex:… ptex:… mv:… misc:… …;`.
+/// The four bit counts add up to the frame (`hbits`, the headers, is about
+/// 5 kb/s and is left out).
+fn first_pass_percent_of(log: &str, standard: TvStandard, video_kbps: u32) -> Option<u64> {
+    let mut frames = 0u64;
+    let mut bits = 0u64;
+    for line in log.lines().filter(|line| line.starts_with("in:")) {
+        frames += 1;
+        for field in line.split(' ') {
+            let Some((name, value)) = field.split_once(':') else {
+                continue;
+            };
+            if matches!(name, "itex" | "ptex" | "mv" | "misc") {
+                bits += value.trim_end_matches(';').parse::<u64>().unwrap_or(0);
+            }
+        }
+    }
+    if frames == 0 || video_kbps == 0 {
+        return None;
+    }
+    let (num, den): (u64, u64) = match standard {
+        TvStandard::Ntsc => (30_000, 1_001),
+        TvStandard::Pal => (25, 1),
+    };
+    let bits_per_second = bits * num / (frames * den);
+    // bits per second / 1000 / kb/s * 100.
+    Some(bits_per_second / (10 * u64::from(video_kbps)))
 }
 
 fn null_sink() -> &'static str {
@@ -1316,9 +1394,11 @@ fn video_codec_args(video: &VideoEncodeConfig) -> Vec<String> {
         MOTION_COMPARE.to_string(),
         // Measured on hard content (fractal zoom + grain, PAL, 2-pass,
         // PSNR against lossless): +0.35 dB at 4.5 Mbps for +3 % time.
-        // Rejected after timing them: qmin/lmin 1 (+58 % time at high
-        // bitrates, only adds bits where quality is already transparent),
-        // dia_size 2 and bidir_refine (+14 % time for +0.1 dB).
+        // Rejected after timing them: dia_size 2 and bidir_refine (+14 %
+        // time for +0.1 dB). qmin/lmin 1 is not a fixed setting (it takes
+        // bits from the hard scenes when the bitrate is already reached);
+        // it is added only when the first pass cannot spend the bitrate,
+        // see `SPEND_BELOW_PERCENT`.
         "-last_pred".to_string(),
         "2".to_string(),
         "-mpv_flags".to_string(),
@@ -1538,6 +1618,45 @@ mod tests {
         assert!(has_pair(&pass2, "-cmp", "satd"));
         assert!(has_pair(&pass2, "-subcmp", "satd"));
         assert!(!pass2.contains(&"-b_strategy".to_string()));
+    }
+
+    #[test]
+    fn an_easy_video_gets_the_lower_quantiser_floor() {
+        // 30 NTSC frames of 100,000 bits: 2,997 kb/s.
+        let line = "in:0 out:0 type:1 q:236 itex:90000 ptex:4000 mv:5000 misc:1000 fcode:1 bcode:1 mc-var:0 var:0 icount:1350 hbits:1534;\n";
+        let log = line.repeat(30);
+        assert_eq!(
+            first_pass_percent_of(&log, TvStandard::Ntsc, 4_500),
+            Some(66)
+        );
+        assert_eq!(
+            first_pass_percent_of(&log, TvStandard::Ntsc, 3_000),
+            Some(99)
+        );
+        // The same 30 frames at PAL's 25 a second: 2,500 kb/s.
+        assert_eq!(
+            first_pass_percent_of(&log, TvStandard::Pal, 2_500),
+            Some(100)
+        );
+        assert_eq!(first_pass_percent_of("", TvStandard::Ntsc, 4_500), None);
+        assert_eq!(
+            first_pass_percent_of("not a log\n", TvStandard::Ntsc, 4_500),
+            None
+        );
+
+        let args = with_low_quant_floor(build_pass2_args(&request()));
+        assert!(has_pair(&args, "-qmin", "1"));
+        assert!(has_pair(&args, "-lmin", "118"));
+        // Output options: before `-pass`, never after the output file.
+        let floor = args.iter().position(|arg| arg == "-qmin").unwrap();
+        let pass = args.iter().position(|arg| arg == "-pass").unwrap();
+        assert!(floor < pass);
+        assert!(has_pair(&args, "-pass", "2"));
+        assert!(!build_pass2_args(&request()).contains(&"-qmin".to_string()));
+        assert_eq!(
+            passlog_file(&request()),
+            PathBuf::from("/tmp/out/episode-01.passlog-0.log")
+        );
     }
 
     #[test]

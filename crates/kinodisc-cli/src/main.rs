@@ -35,6 +35,37 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     };
 
+    // `--help` after a subcommand shows how to use it instead of an error
+    // about an unknown option. An unknown command still fails below.
+    const COMMANDS: [&str; 18] = [
+        "doctor",
+        "plan",
+        "probe",
+        "render",
+        "verify",
+        "devices",
+        "burn",
+        "bundle",
+        "batch",
+        "toolchain",
+        "split",
+        "scenes",
+        "template",
+        "project",
+        "chapters",
+        "join",
+        "inspect",
+        "slideshow",
+    ];
+    if COMMANDS.contains(&command) && args[1..].iter().any(|arg| arg == "--help" || arg == "-h") {
+        if command == "project" {
+            println!("{}", project_cmd::USAGE);
+        } else {
+            print_help();
+        }
+        return ExitCode::SUCCESS;
+    }
+
     match command {
         "doctor" => doctor(&args[1..]),
         "plan" => plan(&args[1..]).await,

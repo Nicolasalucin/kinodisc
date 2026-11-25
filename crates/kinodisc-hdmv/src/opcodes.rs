@@ -12,6 +12,8 @@
 //! ```
 
 pub const OP_NOP: u32 = 0x0000_0000;
+/// `Break`: ends the object's commands.
+pub const OP_BREAK: u32 = 0x0002_0000;
 /// `JumpTitle`: branch/jump, one immediate operand.
 pub const OP_JUMP_TITLE: u32 = 0x2181_0000;
 /// `JumpObject`: branch/jump to a MovieObject, one immediate operand.

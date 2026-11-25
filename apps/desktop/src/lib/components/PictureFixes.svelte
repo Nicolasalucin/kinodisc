@@ -217,6 +217,7 @@
             <button type="button" aria-pressed={filters.denoise === value} onclick={() => set({ denoise: value as "off" })}>{t(label)}</button>
           {/each}
         </div>
+        <p class="ui-hint mt-1">{t("En las pruebas no ahorró bits: en vídeos limpios empeora la imagen y en vídeos con ruido el fuerte pierde calidad.")}</p>
       </div>
 
       <div>

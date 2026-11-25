@@ -132,6 +132,11 @@ export const commands = {
 	 */
 	renderCancel: () => typedError<null, string>(__TAURI_INVOKE("render_cancel")),
 	/**
+	 *  True when the folder already has an image with that name: the app asks
+	 *  before it is replaced.
+	 */
+	renderIsoExists: (outputDir: string, isoName: string) => __TAURI_INVOKE<boolean>("render_iso_exists", { outputDir, isoName }),
+	/**
 	 *  Copies a finished disc image into `<output_dir>/<folder_name>` as a
 	 *  VIDEO_TS/BDMV folder (byte-identical to the disc) and, when
 	 *  `remove_iso` is set, deletes the image afterwards.
@@ -723,6 +728,18 @@ export type DiscPart_Serialize = {
 	fileName: string,
 };
 
+/**
+ *  What the finished image occupies. The plan is an upper limit: easy
+ *  pictures reach the encoder's best quality before they use the planned
+ *  bitrate, so the image can be much smaller (1.3.0: 71 % of a DVD-5 planned
+ *  at 99 %).
+ */
+export type DiscUsage = {
+	imageBytes: number,
+	plannedBytes: number,
+	capacityBytes: number,
+};
+
 export type DvdProfile = "d1" | "halfD1" | "auto";
 
 export type DvdVideoConfig = DvdVideoConfig_Serialize | DvdVideoConfig_Deserialize;
@@ -739,7 +756,16 @@ export type DvdVideoConfig_Deserialize = {
 	gopFrames: number,
 	bFrames: number,
 	twoPass: boolean,
+	/**
+	 *  Not read by the encoder (it never was): pass 2 always uses trellis.
+	 *  Kept so projects keep their schema.
+	 */
 	trellis?: boolean,
+	/**
+	 *  The slower first pass of 1.3.0 and before. Both are two passes; the
+	 *  fast one only measures the video with lighter tools.
+	 */
+	fullFirstPass?: boolean,
 };
 
 export type DvdVideoConfig_Serialize = {
@@ -754,7 +780,16 @@ export type DvdVideoConfig_Serialize = {
 	gopFrames: number,
 	bFrames: number,
 	twoPass: boolean,
+	/**
+	 *  Not read by the encoder (it never was): pass 2 always uses trellis.
+	 *  Kept so projects keep their schema.
+	 */
 	trellis: boolean,
+	/**
+	 *  The slower first pass of 1.3.0 and before. Both are two passes; the
+	 *  fast one only measures the video with lighter tools.
+	 */
+	fullFirstPass: boolean,
 };
 
 export type EdgeSource = "manual" | "geometric" | "selfLoop" | "forced";
@@ -1741,6 +1776,7 @@ export type RenderOutcome_Deserialize = {
 	elapsedMs: number,
 	warnings: Diagnostic_Deserialize[],
 	verification?: VerifyReport_Deserialize | null,
+	usage: DiscUsage,
 };
 
 export type RenderOutcome_Serialize = {
@@ -1749,6 +1785,7 @@ export type RenderOutcome_Serialize = {
 	elapsedMs: number,
 	warnings: Diagnostic_Serialize[],
 	verification: VerifyReport_Serialize | null,
+	usage: DiscUsage,
 };
 
 export type Rotation = "none" | "clockwise" | "half" | "counterClockwise";

@@ -248,6 +248,7 @@
             <div class="flex items-center gap-1">
               <select
                 class="ui-input ui-input-sm min-w-[9rem]"
+                aria-label={t("Pista de audio para añadir")}
                 bind:value={audioToAdd}
                 disabled={availableAudio.length === 0}
               >

@@ -42,6 +42,8 @@ pub const MOTION_MENU_STALL: Duration = Duration::from_secs(75);
 /// Tries of a motion menu before the render fails: a hang is not
 /// deterministic.
 const MOTION_MENU_TRIES: u32 = 4;
+/// Progress stage sent when a stuck motion menu is encoded again.
+pub const MOTION_MENU_RETRY: &str = "motion-menu-retry";
 
 #[derive(Debug, Clone)]
 pub struct VideoEncodeConfig {
@@ -57,6 +59,8 @@ pub struct VideoEncodeConfig {
     pub scale_mode: VideoScaleMode,
     /// Picture fixes (crop, rotate, colour…) run before the scale chain.
     pub pre_filter: Option<String>,
+    /// The slow first pass of 1.3.0 and before.
+    pub full_first_pass: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -271,16 +275,29 @@ pub enum EncodeError {
     InvalidConfig(String),
     #[error("no se pudo preparar el directorio de salida: {0}")]
     Io(#[from] std::io::Error),
-    #[error("FFmpeg falló en {stage} con código {code}: {stderr}")]
+    #[error("FFmpeg falló en {} con código {code}: {stderr}", stage_label(stage))]
     Ffmpeg {
         stage: &'static str,
         code: i32,
         stderr: String,
     },
-    #[error("FFmpeg excedió el tiempo máximo en {0}")]
+    #[error("FFmpeg excedió el tiempo máximo en {}", stage_label(.0))]
     Timeout(&'static str),
-    #[error("FFmpeg dejó de avanzar en {0}")]
+    #[error("FFmpeg dejó de avanzar en {}", stage_label(.0))]
     Stalled(&'static str),
+}
+
+/// A stage in words, for error messages.
+fn stage_label(stage: &str) -> &str {
+    match stage {
+        "pass1" => "la primera pasada",
+        "pass2" => "la segunda pasada",
+        "audio" => "el audio",
+        "mux" => "la unión de audio y vídeo",
+        "menu" => "un menú",
+        "motion-menu" => "un menú animado",
+        other => other,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -426,7 +443,19 @@ impl DvdEncoder {
             {
                 // A hang is not deterministic: the same menu rendered on the
                 // next try in 1.3 QA.
-                Err(EncodeError::Stalled(_)) if attempt < MOTION_MENU_TRIES => continue,
+                Err(EncodeError::Stalled(_)) if attempt < MOTION_MENU_TRIES => {
+                    if let Some(sink) = &progress {
+                        let _ = sink
+                            .send(EncodeProgress {
+                                stage: MOTION_MENU_RETRY,
+                                out_time_us: 0,
+                                speed_x: None,
+                                fps: None,
+                            })
+                            .await;
+                    }
+                    continue;
+                }
                 result => result?,
             }
             break;
@@ -547,15 +576,48 @@ async fn run_stage_watched(
         Err(EncodeError::Ffmpeg {
             stage,
             code: status.code().unwrap_or(-1),
-            stderr: tail(&detail, 4_000),
+            stderr: tail(&error_lines(&detail), 1_500),
         })
     }
+}
+
+/// The lines of FFmpeg's stderr that explain a failure. Its banner, stream
+/// lists and metadata used to fill the message (QA 1.3.0). Without any such
+/// line, the last ones.
+fn error_lines(stderr: &str) -> String {
+    const SIGNS: [&str; 10] = [
+        "error",
+        "invalid",
+        "no such",
+        "failed",
+        "could not",
+        "cannot",
+        "unable",
+        "denied",
+        "no space",
+        "not supported",
+    ];
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let signs: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|line| {
+            let lower = line.to_lowercase();
+            SIGNS.iter().any(|sign| lower.contains(sign))
+        })
+        .collect();
+    let chosen = if signs.is_empty() { &lines } else { &signs };
+    chosen[chosen.len().saturating_sub(4)..].join("\n")
 }
 
 /// True when a `-progress` line shows the encode moved: a new frame count,
 /// output time or output size. `progress=` and speed lines repeat while
 /// FFmpeg is stuck.
-fn progress_advanced(line: &str, last: &mut [String; 3]) -> bool {
+pub fn progress_advanced(line: &str, last: &mut [String; 3]) -> bool {
     let slot = if let Some(value) = line.strip_prefix("frame=") {
         Some((0, value))
     } else if let Some(value) = line.strip_prefix("out_time_us=") {
@@ -875,6 +937,7 @@ pub fn build_menu_encode_args(request: &MenuEncodeRequest) -> Vec<String> {
         // spumux button rectangles reference; letterboxing it would move them.
         scale_mode: VideoScaleMode::Stretch,
         pre_filter: None,
+        full_first_pass: false,
     };
     let mut args = vec![
         "-hide_banner".to_string(),
@@ -895,9 +958,16 @@ pub fn build_menu_encode_args(request: &MenuEncodeRequest) -> Vec<String> {
             "anullsrc=r=48000:cl=stereo".to_string(),
         ]);
     }
+    // Every frame of the menu: `-t` alone left the last one out, and the audio
+    // ran past the picture (QA 1.3.0). Half a frame more than the frames keeps
+    // the audio within one AC-3 frame of them.
+    let fps = request.fps.as_f64();
+    let frames = ((request.duration_ms as f64 * fps / 1000.0).ceil()).max(1.0);
     args.extend([
+        "-frames:v".to_string(),
+        format!("{frames:.0}"),
         "-t".to_string(),
-        format!("{:.3}", request.duration_ms as f64 / 1000.0),
+        format!("{:.3}", (frames + 0.5) / fps),
     ]);
     args.extend(video_codec_args(&video));
     args.extend([
@@ -1294,12 +1364,16 @@ fn intra_dc_precision(kbps: u32) -> u8 {
     }
 }
 
-/// Pass 1 only gathers rate-control statistics and fixes the B-frame layout
-/// (`-b_strategy 2`). It keeps `-mbd rd` but drops RD motion comparison and
-/// trellis: with them, `b_strategy 2` trial-encoded every frame several
-/// times at full RD cost (pass 1 took 44 s against 8 s for pass 2). Measured
-/// on the quality fixture: final PSNR 43.08 dB before, 43.10 dB after, the
-/// whole two-pass encode 2.8x faster. Pass 2 keeps full RD and trellis 2.
+/// Pass 1 only gathers rate-control statistics. Pass 2 keeps full RD and
+/// trellis 2.
+///
+/// Full (`full_first_pass`): `-mbd rd` and the B-frame layout of
+/// `-b_strategy 2`, without RD motion comparison and trellis (with them
+/// `b_strategy 2` trial-encoded every frame several times).
+///
+/// Fast (the default since 1.3.1): `-mbd simple -b_strategy 0`. Measured on a
+/// 60 s synthetic clip of easy and hard scenes: pass 1 took 4.4 s instead of
+/// 37 s, and the disc lost 0.1 VMAF (hard scenes 0.1) at 3,000-4,500 kb/s.
 fn first_pass_codec_args(video: &VideoEncodeConfig) -> Vec<String> {
     let mut args = video_codec_args(video);
     for option in ["-cmp", "-subcmp"] {
@@ -1309,6 +1383,13 @@ fn first_pass_codec_args(video: &VideoEncodeConfig) -> Vec<String> {
     }
     if let Some(position) = args.iter().position(|arg| arg == "-trellis") {
         args[position + 1] = "0".to_string();
+    }
+    if !video.full_first_pass {
+        for (option, value) in [("-mbd", "simple"), ("-b_strategy", "0")] {
+            if let Some(position) = args.iter().position(|arg| arg == option) {
+                args[position + 1] = value.to_string();
+            }
+        }
     }
     args
 }
@@ -1376,6 +1457,7 @@ mod tests {
             top_field_first: true,
             scale_mode: VideoScaleMode::Letterbox,
             pre_filter: None,
+            full_first_pass: false,
         }
     }
 
@@ -1428,7 +1510,15 @@ mod tests {
 
     #[test]
     fn pass1_args_include_two_pass_and_motion_flags() {
-        let args = build_pass1_args(&request());
+        // Fast first pass (the default): lighter tools, still two passes.
+        let fast = build_pass1_args(&request());
+        assert!(has_pair(&fast, "-pass", "1"));
+        assert!(has_pair(&fast, "-mbd", "simple"));
+        assert!(has_pair(&fast, "-b_strategy", "0"));
+        assert!(has_pair(&fast, "-trellis", "0"));
+        let mut full = request();
+        full.video.full_first_pass = true;
+        let args = build_pass1_args(&full);
         assert!(has_pair(&args, "-pass", "1"));
         assert!(has_pair(&args, "-b_strategy", "2"));
         assert!(has_pair(&args, "-mbd", "rd"));
@@ -1745,6 +1835,36 @@ mod tests {
     }
 
     #[test]
+    fn errors_name_the_stage_in_words() {
+        let error = EncodeError::Ffmpeg {
+            stage: "pass1",
+            code: 1,
+            stderr: "x".to_string(),
+        };
+        assert_eq!(
+            error.to_string(),
+            "FFmpeg falló en la primera pasada con código 1: x"
+        );
+        assert_eq!(
+            EncodeError::Stalled("motion-menu").to_string(),
+            "FFmpeg dejó de avanzar en un menú animado"
+        );
+    }
+
+    #[test]
+    fn failures_show_the_lines_that_explain_them() {
+        let stderr = "ffmpeg version 9.1\n  Metadata:\n    CODER : Lavf\n\
+            menu.png: No such file or directory\nError opening input file menu.png.\n  Stream #0:1: Audio: ac3\n";
+        assert_eq!(
+            error_lines(stderr),
+            "menu.png: No such file or directory\nError opening input file menu.png."
+        );
+        // Nothing says what failed (the process was killed): the last lines.
+        assert_eq!(error_lines("a\n\nb\n"), "a\nb");
+        assert_eq!(error_lines(""), "");
+    }
+
+    #[test]
     fn the_watchdog_follows_values_not_lines() {
         let mut last: [String; 3] = Default::default();
         assert!(progress_advanced("frame=10", &mut last));
@@ -1813,7 +1933,9 @@ mod tests {
         });
         assert!(has_pair(&args, "-loop", "1"));
         assert!(args.iter().any(|arg| arg == "anullsrc=r=48000:cl=stereo"));
-        assert!(has_pair(&args, "-t", "30.000"));
+        // 900 frames, and audio for half a frame more (30.047 s).
+        assert!(has_pair(&args, "-frames:v", "900"));
+        assert!(has_pair(&args, "-t", "30.047"));
         assert!(has_pair(&args, "-f", "dvd"));
         assert!(args.iter().any(|arg| arg.ends_with("menu.mpg")));
     }

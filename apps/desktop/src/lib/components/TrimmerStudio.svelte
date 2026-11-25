@@ -569,7 +569,7 @@
               <track kind="captions" />
             </video>
           {:else}
-            <div class="p-6 text-center text-xs text-slate-500">
+            <div class="p-6 text-center text-xs text-[#ffffffbf]">
               {preparing ? t("Preparando vista previa…") : t("Sin vista previa disponible")}
             </div>
           {/if}
@@ -585,7 +585,7 @@
               </button>
               <span class="font-mono">{formatMs(currentTimeMs)}</span>
               <span class="text-slate-500">/</span>
-              <span class="font-mono text-slate-500">{formatMs(sourceDuration)}</span>
+              <span class="font-mono text-slate-400">{formatMs(sourceDuration)}</span>
               <button
                 type="button"
                 onclick={captureThumbnail}

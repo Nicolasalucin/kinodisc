@@ -23,6 +23,7 @@
   import { compositeProjectMenus } from "../production";
   import { projectStore } from "../stores/project.svelte";
   import { basename, formatBytes, safeFileName } from "../utils/format";
+  import { confirmReplace } from "../utils/confirm";
   import {
     cpuOnlyFormat,
     encoderPreference,
@@ -509,6 +510,28 @@
           ].slice(-300);
         }
       }
+      // An image with the same name is replaced only if the user says so.
+      // Disc folders use a temporary image name.
+      if (mode !== "folder") {
+        const existing: string[] = [];
+        for (const part of parts) {
+          const base = safeFileName(current.name, t("Disco"));
+          const name = `${part.count > 1 ? `${base} - ${t("Disco {index}", { index: part.index })}` : base}.iso`;
+          if (await commands.renderIsoExists(root, name)) existing.push(name);
+        }
+        if (existing.length > 0) {
+          const question =
+            existing.length === 1
+              ? t("Ya hay una imagen llamada «{name}» en la carpeta de salida. ¿Reemplazarla?", { name: existing[0] })
+              : t("Ya hay {count} imágenes con esos nombres en la carpeta de salida. ¿Reemplazarlas?", { count: existing.length });
+          if (!(await confirmReplace(question))) {
+            cancelRequested = true;
+            projectStore.renderStage = t("Cancelado");
+            projectStore.renderSummary = t("Generación cancelada.");
+            return;
+          }
+        }
+      }
       const outputs: string[] = [];
       let elapsedMs = 0;
       for (const part of parts) {
@@ -549,6 +572,7 @@
         );
         elapsedMs += outcome.elapsedMs;
         projectStore.renderVerification = outcome.verification ?? null;
+        projectStore.renderUsages = [...projectStore.renderUsages, outcome.usage];
         let produced = outcome.isoPath;
         if (mode === "folder") {
           projectStore.renderStage = prefix + t("Creando la carpeta del disco");
@@ -596,6 +620,7 @@
         // over from an earlier disc of the same run.
         projectStore.renderSummary = null;
         projectStore.renderVerification = null;
+        projectStore.renderUsages = [];
         projectStore.renderStage = t("Error");
         projectStore.renderError = localizeRenderError(messageOf(cause));
       }
@@ -851,11 +876,43 @@
             {#if contentType === "animation"}
               {t("Ajusta el codificador a colores planos y líneas definidas: en animación, ~5–10 % menos bits para la misma calidad.")}
             {:else if contentType === "grain"}
-              {t("Conserva el grano de la imagen en lugar de alisarlo.")}
+              {t("Conserva el grano de la imagen en lugar de alisarlo. En las pruebas no dio un ahorro claro.")}
             {:else}
               {t("Los ajustes normales del codificador.")}
             {/if}
           </p>
+          {#if project?.disc.video.kind === "avchd"}
+            <label class="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+              <span class="text-[13px] text-slate-300">{t("GOP")}</span>
+              <select
+                class="ui-input ui-input-sm min-w-0 max-w-full"
+                value={String(project.disc.video.gopSeconds ?? 1)}
+                disabled={busy}
+                onchange={(event) => projectStore.setGopSeconds(Number(event.currentTarget.value))}
+              >
+                <option value="1">{t("1 s (norma Blu-ray)")}</option>
+                <option value="2">{t("2 s: ~5 % menos bits en película, ~15 % en animación (probado en PS4)")}</option>
+                <option value="3">{t("3 s: ~7 % menos bits en película, ~20 % en animación (muy experimental, sin probar en reproductores)")}</option>
+              </select>
+            </label>
+            <p class="ui-hint mt-1.5">{t("Cada cuánto va una imagen completa. Más segundos dan más calidad a bitrate bajo; adelantar salta de a esa distancia.")}</p>
+          {/if}
+        </div>
+      {/if}
+
+      {#if !isAvchd && mode !== "existing" && project?.disc.video.kind === "dvd"}
+        <div class="mt-3 rounded-md border border-slate-700 px-3 py-2">
+          <label class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+            <span class="text-[13px] text-slate-300">{t("Primera pasada completa (más lenta)")}</span>
+            <input
+              type="checkbox"
+              class="ui-check"
+              checked={project.disc.video.fullFirstPass ?? false}
+              disabled={busy}
+              onchange={(event) => projectStore.setFullFirstPass(event.currentTarget.checked)}
+            />
+          </label>
+          <p class="ui-hint mt-1.5">{t("Analiza el vídeo con más detalle antes de codificarlo. Tarda bastante más y en las pruebas la calidad casi no cambió.")}</p>
         </div>
       {/if}
 
@@ -986,6 +1043,18 @@
                 {t("Copias grabadas: {done} de {total}", { done: seriesDone, total: seriesTotal })}
               </p>
             {/if}
+            {#each projectStore.renderUsages as usage, index}
+              <p class="mt-1 text-[11px] text-slate-300">
+                {#if projectStore.renderUsages.length > 1}{t("Disco {index}", { index: index + 1 })} · {/if}{t("El disco ocupa {size} de {capacity} ({percent}).", {
+                  size: formatBytes(usage.imageBytes),
+                  capacity: formatBytes(usage.capacityBytes),
+                  percent: formatPercent((usage.imageBytes * 100) / Math.max(1, usage.capacityBytes)),
+                })}
+                {#if usage.imageBytes < usage.plannedBytes * 0.95}
+                  <span class="text-slate-400">{t("El plan preveía hasta {planned}: el codificador no usó todo el bitrate.", { planned: formatBytes(usage.plannedBytes) })}</span>
+                {/if}
+              </p>
+            {/each}
             {#if projectStore.renderVerification}
               <details class="mt-2 rounded-lg border border-slate-800 bg-slate-950/60 px-2 py-1.5">
                 <summary class="cursor-pointer select-none text-[11px] text-slate-400">

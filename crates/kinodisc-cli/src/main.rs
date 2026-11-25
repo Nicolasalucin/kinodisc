@@ -689,8 +689,19 @@ fn print_report(report: &ToolchainReport, verbose: bool) {
         }
     }
     println!();
-    if report.ok {
+    let optional: Vec<&str> = report
+        .tools
+        .iter()
+        .filter(|tool| !tool.required && !tool.found)
+        .map(|tool| tool.name.as_str())
+        .collect();
+    if report.ok && optional.is_empty() {
         println!("Toolchain completo.");
+    } else if report.ok {
+        println!(
+            "Toolchain listo. Opcionales que faltan: {}.",
+            optional.join(", ")
+        );
     } else {
         println!("Toolchain incompleto.");
     }

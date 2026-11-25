@@ -148,8 +148,14 @@ pub struct DvdVideoConfig {
     pub gop_frames: u16,
     pub b_frames: u8,
     pub two_pass: bool,
+    /// Not read by the encoder (it never was): pass 2 always uses trellis.
+    /// Kept so projects keep their schema.
     #[serde(default = "default_true")]
     pub trellis: bool,
+    /// The slower first pass of 1.3.0 and before. Both are two passes; the
+    /// fast one only measures the video with lighter tools.
+    #[serde(default)]
+    pub full_first_pass: bool,
 }
 
 impl Default for DvdVideoConfig {
@@ -163,6 +169,7 @@ impl Default for DvdVideoConfig {
             b_frames: 2,
             two_pass: true,
             trellis: true,
+            full_first_pass: false,
         }
     }
 }

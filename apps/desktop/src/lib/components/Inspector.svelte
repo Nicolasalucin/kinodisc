@@ -1114,7 +1114,7 @@
             <div class="flex justify-between gap-2">
               <dt class="text-slate-500">{t("Plan")}</dt>
               <dd class={projectStore.plan ? (projectStore.plan.feasible ? "text-emerald-300" : "text-rose-300") : "text-slate-500"}>
-                {projectStore.plan ? formatPercent(projectStore.planPercent) : t("sin calcular")}
+                {projectStore.plan ? t("hasta {size}", { size: formatPercent(projectStore.planPercent) }) : t("sin calcular")}
               </dd>
             </div>
             <div class="flex justify-between gap-2">
@@ -1251,8 +1251,8 @@
                   <dd class="font-mono text-cyan-300">{projectStore.plan.videoKbps.toLocaleString(i18n.locale)} kbps</dd>
                 </div>
                 <div class="flex justify-between gap-2">
-                  <dt class="text-slate-500">{t("Llenado")}</dt>
-                  <dd class="font-mono text-slate-300">{formatPercent(projectStore.planPercent)}</dd>
+                  <dt class="text-slate-500">{t("Llenado previsto")}</dt>
+                  <dd class="font-mono text-slate-300">{t("hasta {size}", { size: formatPercent(projectStore.planPercent) })}</dd>
                 </div>
                 <div class="flex justify-between gap-2">
                   <dt class="text-slate-500">{t("Viable")}</dt>
@@ -1292,12 +1292,15 @@
             {/if}
           </div>
           {#if project?.disc.video.kind === "dvd"}
-            <label class="flex items-center justify-between rounded-lg border border-slate-800 px-2.5 py-1.5 text-[11px] text-slate-400">
-              <span>{t("Trellis")}</span>
+            <label
+              class="flex items-center justify-between gap-2 rounded-lg border border-slate-800 px-2.5 py-1.5 text-[11px] text-slate-400"
+              title={t("Analiza el vídeo con más detalle antes de codificarlo. Tarda bastante más y en las pruebas la calidad casi no cambió.")}
+            >
+              <span>{t("Primera pasada completa (más lenta)")}</span>
               <input
                 type="checkbox"
-                checked={project.disc.video.trellis}
-                onchange={(event) => projectStore.setTrellis(event.currentTarget.checked)}
+                checked={project.disc.video.fullFirstPass ?? false}
+                onchange={(event) => projectStore.setFullFirstPass(event.currentTarget.checked)}
                 class="accent-cyan-500"
               />
             </label>
@@ -1314,7 +1317,7 @@
               >
                 <option value="1">{t("1 s (norma Blu-ray)")}</option>
                 <option value="2">{t("2 s: ~5 % menos bits en película, ~15 % en animación (probado en PS4)")}</option>
-                <option value="3">{t("3 s: ~7 % menos bits en película, ~20 % en animación (muy experimental)")}</option>
+                <option value="3">{t("3 s: ~7 % menos bits en película, ~20 % en animación (muy experimental, sin probar en reproductores)")}</option>
               </select>
             </label>
           {/if}
@@ -1336,7 +1339,7 @@
             <div class="flex justify-between gap-2">
               <dt class="text-slate-500">{t("Plan")}</dt>
               <dd class={projectStore.plan ? (projectStore.plan.feasible ? "text-emerald-300" : "text-rose-300") : "text-slate-500"}>
-                {projectStore.plan ? formatPercent(projectStore.planPercent) : t("sin calcular")}
+                {projectStore.plan ? t("hasta {size}", { size: formatPercent(projectStore.planPercent) }) : t("sin calcular")}
               </dd>
             </div>
             <div class="flex justify-between gap-2">

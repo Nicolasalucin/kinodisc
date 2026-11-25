@@ -219,6 +219,16 @@ fn final_iso_name(name: Option<&str>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("disc.iso"))
 }
 
+/// True when the folder already has an image with that name: the app asks
+/// before it is replaced.
+#[tauri::command]
+#[specta::specta]
+pub fn render_iso_exists(output_dir: String, iso_name: String) -> bool {
+    Path::new(&output_dir)
+        .join(final_iso_name(Some(&iso_name)))
+        .is_file()
+}
+
 /// Moves the image out of the work folder, replacing an earlier image with
 /// the same name (producing the project again). When that image cannot be
 /// replaced (open in a player, mounted), the new one is kept under the first

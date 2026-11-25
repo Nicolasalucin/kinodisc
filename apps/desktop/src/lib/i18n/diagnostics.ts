@@ -195,6 +195,7 @@ const LOG_TEMPLATES: Array<[string, string]> = [
   ["Intro: reutilizando caché {}", "Intro: reutilizando caché {path}"],
   ["Episodio {}: multiplexando subtítulo {} ({}, {} ms).", "Episodio {episode}: multiplexando subtítulo {index} ({language}, {delay} ms)."],
   ["Codificando {} episodios de a {} a la vez.", "Codificando {count} episodios de a {jobs} a la vez."],
+  ["Menú animado: FFmpeg dejó de avanzar; se codifica otra vez.", "Menú animado: FFmpeg dejó de avanzar; se codifica otra vez."],
   ["Codificando {} episodios de a uno, en segundo plano.", "Codificando {count} episodios de a uno, en segundo plano."],
   ["Codificando episodio {}/{}: {}", "Codificando episodio {index}/{total}: {title}"],
   ["Episodio {}/{}: reutilizando caché de artefactos {}", "Episodio {index}/{total}: reutilizando caché de artefactos {path}"],

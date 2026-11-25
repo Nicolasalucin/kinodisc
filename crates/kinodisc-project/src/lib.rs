@@ -41,7 +41,8 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 /// Loads a project without running semantic validation.
 pub fn load_project(path: impl AsRef<Path>) -> Result<Project, ProjectError> {
     let text = std::fs::read_to_string(path)?;
-    let project: Project = serde_json::from_str(&text)?;
+    // Notepad and Windows PowerShell write a byte order mark.
+    let project: Project = serde_json::from_str(text.trim_start_matches('\u{feff}'))?;
     if project.schema_version != CURRENT_SCHEMA_VERSION {
         return Err(ProjectError::UnsupportedSchema {
             found: project.schema_version,
@@ -173,6 +174,18 @@ mod tests {
         assert_eq!(project.name, "Minimal DVD");
         assert_eq!(project.episodes.len(), 1);
         assert_eq!(project.menus.len(), 2);
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_stop_a_project() {
+        let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/projects/minimal.json");
+        let text = std::fs::read_to_string(source).expect("fixture");
+        let path = std::env::temp_dir().join(format!("kinodisc-bom-{}.json", std::process::id()));
+        std::fs::write(&path, format!("\u{feff}{text}")).expect("write");
+        let loaded = load_project(&path);
+        let _ = std::fs::remove_file(&path);
+        loaded.expect("a project with a byte order mark");
     }
 
     #[test]

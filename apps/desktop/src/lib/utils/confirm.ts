@@ -6,6 +6,18 @@ import { t } from "../i18n/index.svelte";
  * (`window.confirm` does not block in the webview: the action ran while the
  * question was still on screen, QA 1.2.)
  */
+export async function confirmReplace(question: string): Promise<boolean> {
+  try {
+    return await confirm(question, {
+      kind: "warning",
+      okLabel: t("Reemplazar"),
+      cancelLabel: t("Cancelar"),
+    });
+  } catch {
+    return false;
+  }
+}
+
 export async function confirmDelete(question: string): Promise<boolean> {
   try {
     return await confirm(question, {

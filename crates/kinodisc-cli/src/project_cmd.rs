@@ -34,11 +34,14 @@ Uso:
          mismo nombre: «Ep 01.mkv» con «Ep 01.spa.srt»; el idioma sale del
          nombre o de --lang; --episode lo fuerza para un solo archivo)
   kinodisc-cli project episodes <proyecto.json> --after next|menu|stop
+        (al terminar cada episodio: el siguiente, volver al menú o parar;
+         los episodios nuevos siguen con el próximo)
   kinodisc-cli project gop <proyecto.json> 1|2|3
         (AVCHD/Blu-ray: una imagen completa cada 1, 2 o 3 segundos; 2 da más
          calidad a bitrate bajo y se probó en PS4; 3 es muy experimental)
-        (al terminar cada episodio: el siguiente, volver al menú o parar;
-         los episodios nuevos siguen con el próximo)
+  kinodisc-cli project passes <proyecto.json> fast|full
+        (DVD: siempre dos pasadas; full analiza el vídeo con más detalle en
+         la primera y tarda bastante más)
   kinodisc-cli project show <proyecto.json>
 Después: kinodisc-cli render <proyecto.json> -o <carpeta>";
 
@@ -56,6 +59,7 @@ pub async fn run(args: &[String]) -> ExitCode {
         Some("episodes") => episodes(&args[1..]),
         Some("subtitles") => subtitles(&args[1..]),
         Some("gop") => gop(&args[1..]),
+        Some("passes") => passes(&args[1..]),
         Some("show") => show(&args[1..]),
         _ => Err(USAGE.to_string()),
     };
@@ -451,6 +455,15 @@ async fn probe_kind(path: &Path, kind: MediaKind) -> Result<kinodisc_domain::Med
         MediaKind::Audio if probe.audio.is_empty() => {
             Err(format!("{} no tiene audio.", path.display()))
         }
+        // A file that only has the name of a picture has no size.
+        MediaKind::Image
+            if !probe
+                .video
+                .as_ref()
+                .is_some_and(|picture| picture.width > 0 && picture.height > 0) =>
+        {
+            Err(format!("{} no es una imagen legible.", path.display()))
+        }
         _ => Ok(probe),
     }
 }
@@ -625,6 +638,33 @@ fn gop(args: &[String]) -> Result<(), String> {
             " Muy experimental: no se probó en ningún reproductor."
         } else {
             ""
+        }
+    );
+    Ok(())
+}
+
+/// The first pass of a DVD project: fast (default) or full (slower).
+fn passes(args: &[String]) -> Result<(), String> {
+    let [project_path, kind] = args else {
+        return Err(USAGE.to_string());
+    };
+    let full = match kind.as_str() {
+        "fast" => false,
+        "full" => true,
+        _ => return Err(format!("La primera pasada es fast o full, no «{kind}».")),
+    };
+    let mut project = load(project_path)?;
+    let VideoConfig::Dvd(config) = &mut project.disc.video else {
+        return Err("La primera pasada solo se elige en proyectos de DVD.".to_string());
+    };
+    config.full_first_pass = full;
+    save(&project, project_path)?;
+    println!(
+        "Dos pasadas, la primera {}.",
+        if full {
+            "completa (más lenta)"
+        } else {
+            "rápida"
         }
     );
     Ok(())
@@ -888,6 +928,7 @@ fn show(args: &[String]) -> Result<(), String> {
         "capacity": project.disc.capacity,
         "standard": project.disc.standard,
         "aspect": project.disc.aspect,
+        "video": project.disc.video,
         "episodes": project.episodes.iter().map(|episode| serde_json::json!({
             "number": episode.number,
             "title": episode.title,

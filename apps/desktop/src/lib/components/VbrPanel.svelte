@@ -155,14 +155,17 @@
     </div>
     <div class="flex items-center gap-2">
       {#if dvdVideo}
-        <label class="flex items-center gap-1.5 rounded-md border border-slate-800 bg-slate-900/70 px-2 py-1 text-[11px] text-slate-400">
+        <label
+          class="flex items-center gap-1.5 rounded-md border border-slate-800 bg-slate-900/70 px-2 py-1 text-[11px] text-slate-400"
+          title={t("Analiza el vídeo con más detalle antes de codificarlo. Tarda bastante más y en las pruebas la calidad casi no cambió.")}
+        >
           <input
             type="checkbox"
-            checked={dvdVideo.trellis}
-            onchange={(event) => projectStore.setTrellis(event.currentTarget.checked)}
+            checked={dvdVideo.fullFirstPass ?? false}
+            onchange={(event) => projectStore.setFullFirstPass(event.currentTarget.checked)}
             class="accent-cyan-500"
           />
-          {t("Trellis")}
+          {t("Primera pasada completa (más lenta)")}
         </label>
       {/if}
       <span class="rounded-md border border-slate-800 px-2 py-1 text-[11px] text-slate-500">
@@ -244,7 +247,7 @@
               <text x={layerBreakX + 4} y={padTop + 12} fill="var(--color-amber-200)" font-size={labelSize}>{t("corte de capa")}</text>
             {/if}
 
-            {#each timeTicks as tick}
+            {#each timeTicks as tick, index}
               <line
                 x1={xForTime(tick)}
                 y1={padTop + plotHeight}
@@ -255,7 +258,7 @@
               <text
                 x={xForTime(tick)}
                 y={chartHeight - 8}
-                text-anchor="middle"
+                text-anchor={index > 0 && index === timeTicks.length - 1 ? "end" : "middle"}
                 fill="var(--color-slate-500)"
                 font-size={labelSize}
                 font-family="monospace">{formatDuration(tick)}</text>
@@ -362,9 +365,9 @@
             <dd class="font-mono text-cyan-300">{plan ? formatBytes(plan.targetBytes) : "—"}</dd>
           </div>
           <div class="flex justify-between gap-2">
-            <dt class="text-slate-500">{t("Llenado")}</dt>
+            <dt class="text-slate-500">{t("Llenado previsto")}</dt>
             <dd class={`font-mono ${plan && !plan.feasible ? "text-rose-300" : "text-emerald-300"}`}>
-              {plan ? formatPercent(plan.fillPpm / 10_000) : "—"}
+              {plan ? t("hasta {size}", { size: formatPercent(plan.fillPpm / 10_000) }) : "—"}
             </dd>
           </div>
           <div class="flex justify-between gap-2">
@@ -435,8 +438,8 @@
             <dd class="text-emerald-300">{isAvchd ? t("No") : dvdVideo?.twoPass ? t("Sí") : t("No")}</dd>
           </div>
           <div class="flex justify-between gap-2">
-            <dt class="text-slate-500">{t("Trellis")}</dt>
-            <dd class="text-slate-300">{dvdVideo?.trellis ? t("Activo") : t("Desactivado")}</dd>
+            <dt class="text-slate-500">{t("Primera pasada")}</dt>
+            <dd class="text-slate-300">{!dvdVideo ? "—" : dvdVideo.fullFirstPass ? t("Completa") : t("Rápida")}</dd>
           </div>
           <div class="flex justify-between gap-2">
             <dt class="text-slate-500">{t("Escalado")}</dt>

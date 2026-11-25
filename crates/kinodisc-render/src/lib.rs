@@ -48,7 +48,7 @@ use kinodisc_toolchain::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -93,6 +93,30 @@ pub struct RenderOutcome {
     pub elapsed_ms: u64,
     pub warnings: Vec<Diagnostic>,
     pub verification: Option<kinodisc_verify::report::VerifyReport>,
+    pub usage: DiscUsage,
+}
+
+/// What the finished image occupies. The plan is an upper limit: easy
+/// pictures reach the encoder's best quality before they use the planned
+/// bitrate, so the image can be much smaller (1.3.0: 71 % of a DVD-5 planned
+/// at 99 %).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscUsage {
+    pub image_bytes: u64,
+    pub planned_bytes: u64,
+    pub capacity_bytes: u64,
+}
+
+impl DiscUsage {
+    fn new(plan: &BitratePlan, image_bytes: u64) -> Self {
+        let planned = u128::from(plan.capacity_bytes) * u128::from(plan.fill_ppm) / 1_000_000;
+        Self {
+            image_bytes,
+            planned_bytes: planned as u64,
+            capacity_bytes: plan.capacity_bytes,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -311,7 +335,9 @@ async fn render_dvd_project(
     prepare_output(&output_dir)?;
     let encoder = DvdEncoder::default().with_cpu(options.cpu_usage);
 
-    stage(&events, JobStage::EncodeIntro, "Codificando intro").await;
+    if project.first_play.is_some() {
+        stage(&events, JobStage::EncodeIntro, "Codificando intro").await;
+    }
     let intro = encode_intro(
         &project,
         &probes,
@@ -450,6 +476,7 @@ async fn render_dvd_project(
         elapsed_ms: started.elapsed().as_millis() as u64,
         warnings,
         verification,
+        usage: DiscUsage::new(&plan, iso.size_bytes),
     })
 }
 
@@ -2752,6 +2779,7 @@ async fn render_avchd_project(
         elapsed_ms: started.elapsed().as_millis() as u64,
         warnings,
         verification,
+        usage: DiscUsage::new(&plan, final_iso_size),
     })
 }
 
@@ -2967,8 +2995,11 @@ async fn encode_intro(
             source_fingerprint: source_fp,
             inputs_hash,
             target_profile: format!(
-                "dvd:intro:{:?}:{:?}:{:?}",
-                project.disc.standard, project.disc.aspect, project.disc.capacity
+                "dvd:intro:{:?}:{:?}:{:?}{}",
+                project.disc.standard,
+                project.disc.aspect,
+                project.disc.capacity,
+                first_pass_profile(project)
             ),
             target_bitrate: 5_000,
             audio_params_hash: audio_hash,
@@ -3023,6 +3054,7 @@ async fn encode_intro(
             top_field_first: is_top_field_first(probe),
             scale_mode: VideoScaleMode::Letterbox,
             pre_filter: None,
+            full_first_pass: full_first_pass(project),
         },
         audio_tracks: first_play
             .audio
@@ -3693,7 +3725,7 @@ async fn encode_episodes(
                 source_fingerprint: source_fp,
                 inputs_hash,
                 target_profile: format!(
-                    "dvd:{:?}:{:?}:{:?}:{:?}{}",
+                    "dvd:{:?}:{:?}:{:?}:{:?}{}{}",
                     plan.profile,
                     project.disc.standard,
                     project.disc.aspect,
@@ -3702,7 +3734,8 @@ async fn encode_episodes(
                         silent_dvd_profile(&audio_tracks)
                     } else {
                         String::new()
-                    }
+                    },
+                    first_pass_profile(project)
                 ),
                 target_bitrate: video_kbps,
                 audio_params_hash: audio_hash,
@@ -3728,6 +3761,7 @@ async fn encode_episodes(
                 top_field_first: is_top_field_first(probe),
                 scale_mode: episode.scale_mode,
                 pre_filter: pre_filter.clone(),
+                full_first_pass: full_first_pass(project),
             },
             audio_tracks,
             trim: episode.trim,
@@ -3863,6 +3897,7 @@ async fn encode_episodes(
         encoded_by_position.insert(position, encoded);
     }
 
+    let mut used_files: HashSet<PathBuf> = HashSet::new();
     for (position, item) in prepared.iter().enumerate() {
         let (index, episode, duration, fps) = (item.index, item.episode, item.duration, item.fps);
         let cache_key = &item.cache_key;
@@ -3907,6 +3942,11 @@ async fn encode_episodes(
             }
         };
         let episodes_dir = output.join("episodes");
+        let base_mpeg = distinct_episode_file(
+            base_mpeg,
+            &mut used_files,
+            &episodes_dir.join(format!("episode-{:02}-own.mpg", episode.number)),
+        )?;
         let subtitle_stem = format!("episode-{:02}", episode.number);
         let (path, subtitles) = mux_episode_subtitles(
             SubtitleMuxContext {
@@ -4054,6 +4094,11 @@ fn build_motion_buttons(
         let Some(motion) = &button.motion_preview else {
             continue;
         };
+        // A card without a thumbnail is composed still (`composes_motion`):
+        // its episode must not play over the title (QA 1.3.0).
+        if button.thumbnail.is_none() {
+            continue;
+        }
         let Some((_, rect)) = rects.iter().find(|(id, _)| *id == button.id) else {
             continue;
         };
@@ -4656,6 +4701,14 @@ async fn encode_motion_menu_with_progress(
     let duration = duration_ms.max(1) as f64;
     let forward = tokio::spawn(async move {
         while let Some(progress) = receiver.recv().await {
+            if progress.stage == kinodisc_dvd::MOTION_MENU_RETRY {
+                log(
+                    &event_sink,
+                    "Menú animado: FFmpeg dejó de avanzar; se codifica otra vez.".to_string(),
+                )
+                .await;
+                continue;
+            }
             let fraction = (progress.out_time_us as f64 / 1000.0 / duration).min(1.0);
             let permille =
                 (((index as f64 + fraction) / total.max(1) as f64) * 1000.0).min(1000.0) as u16;
@@ -4784,6 +4837,40 @@ fn is_top_field_first(probe: &MediaProbe) -> bool {
         .and_then(|video| video.field_order.as_deref())
         .map(|order| order != "bb")
         .unwrap_or(true)
+}
+
+/// The slow first pass of a DVD project (an option since 1.3.1).
+pub(crate) fn full_first_pass(project: &Project) -> bool {
+    matches!(&project.disc.video, VideoConfig::Dvd(config) if config.full_first_pass)
+}
+
+/// Part of the cache key: the full first pass keeps the keys of 1.3.0.
+fn first_pass_profile(project: &Project) -> &'static str {
+    if full_first_pass(project) {
+        ""
+    } else {
+        ":p1fast"
+    }
+}
+
+/// `path`, or a copy of it when an earlier episode already uses that file.
+/// Two episodes with the same video share one cached encode, and DVDAuthor
+/// points every title that names one file at the same cells: the disc failed
+/// its own verification (1.3.1 QA, F-39).
+fn distinct_episode_file(
+    path: PathBuf,
+    used: &mut HashSet<PathBuf>,
+    copy: &Path,
+) -> std::io::Result<PathBuf> {
+    if used.insert(path.clone()) {
+        return Ok(path);
+    }
+    if let Some(parent) = copy.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(&path, copy)?;
+    used.insert(copy.to_path_buf());
+    Ok(copy.to_path_buf())
 }
 
 fn gop_for(standard: TvStandard) -> u16 {
@@ -5327,6 +5414,17 @@ fn wire_title_one(bdmv_root: &Path, root_object: u16) -> Result<(), RenderError>
             kinodisc_hdmv::OP_PLAY_PLAYLIST | kinodisc_hdmv::OP_PLAY_PLAYLIST_PM
         )
     };
+    // tsMuxeR ends the object with a `Break` after the playlist (the native
+    // muxer does not): the jump takes its place (1.3.0 refused every
+    // AVCHD/Blu-ray disc with a menu when tsMuxeR was installed).
+    while commands.last().is_some_and(|command| {
+        matches!(
+            command.opcode(),
+            kinodisc_hdmv::OP_BREAK | kinodisc_hdmv::OP_NOP
+        )
+    }) {
+        commands.pop();
+    }
     if !commands.last().is_some_and(plays) {
         return Err(RenderError::Menu(
             "el objeto del título 1 no termina reproduciendo la serie".to_string(),
@@ -5684,8 +5782,9 @@ async fn encode_menu_video_with_transition(
     if spec.psf {
         command.args(["-x264opts", "fake-interlaced=1:pic-struct=1"]);
     }
+    command.args(["-progress", "pipe:1", "-nostats"]);
     command.args(["-f", menu_video_format(path)]).arg(path);
-    run_menu_ffmpeg(command, path, "video").await
+    run_menu_video(command, path).await
 }
 
 /// The menu clips' peak-rate limit (the disc maximum): a moving
@@ -5814,8 +5913,9 @@ async fn encode_menu_video(
     if spec.psf {
         command.args(["-x264opts", "fake-interlaced=1:pic-struct=1"]);
     }
+    command.args(["-progress", "pipe:1", "-nostats"]);
     command.args(["-f", menu_video_format(path)]).arg(path);
-    run_menu_ffmpeg(command, path, "video").await
+    run_menu_video(command, path).await
 }
 
 async fn encode_hd_menu_audio(
@@ -5893,6 +5993,92 @@ fn menu_video_format(path: &Path) -> &'static str {
     } else {
         "h264"
     }
+}
+
+/// A menu clip that shows no new frame, time or byte for this long is stuck
+/// (the DVD menus were, 1.3.0 QA). Longer than the DVD one: a 1080p menu with
+/// many cards starts slowly while episodes are encoded beside it.
+const HD_MENU_STALL: Duration = Duration::from_secs(180);
+const HD_MENU_TRIES: u32 = 3;
+
+/// Encodes a menu clip (`command` ends in `-progress pipe:1`), stopping and
+/// repeating it when it stops advancing.
+async fn run_menu_video(mut command: Command, path: &Path) -> Result<(), RenderError> {
+    use std::process::Stdio;
+    use std::sync::atomic::AtomicU64;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    for attempt in 1..=HD_MENU_TRIES {
+        let mut child = command.spawn()?;
+        let (Some(stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take()) else {
+            return Err(RenderError::Encode(
+                "no se pudo leer la salida de FFmpeg".to_string(),
+            ));
+        };
+        let started = Instant::now();
+        let activity = Arc::new(AtomicU64::new(0));
+        let seen = Arc::clone(&activity);
+        let progress = tokio::spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            let mut last: [String; 3] = Default::default();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if kinodisc_dvd::progress_advanced(&line, &mut last) {
+                    seen.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+                }
+            }
+        });
+        let errors = tokio::spawn(async move {
+            let mut buffer = Vec::new();
+            let _ = stderr.read_to_end(&mut buffer).await;
+            String::from_utf8_lossy(&buffer).into_owned()
+        });
+        // One wait for the whole encode: a tick must not restart it.
+        let mut ticker = tokio::time::interval(Duration::from_secs(5));
+        let finished = loop {
+            tokio::select! {
+                status = child.wait() => break Some(status?),
+                _ = ticker.tick() => {
+                    let elapsed = started.elapsed();
+                    let quiet = elapsed
+                        .saturating_sub(Duration::from_millis(activity.load(Ordering::Relaxed)));
+                    if elapsed > AUX_FFMPEG_TIMEOUT || quiet > HD_MENU_STALL {
+                        break None;
+                    }
+                }
+            }
+        };
+        let Some(status) = finished else {
+            let timed_out = started.elapsed() > AUX_FFMPEG_TIMEOUT;
+            let _ = child.kill().await;
+            progress.abort();
+            errors.abort();
+            if timed_out || attempt == HD_MENU_TRIES {
+                return Err(RenderError::Encode(
+                    "FFmpeg dejó de avanzar al generar el video del menú HDMV".to_string(),
+                ));
+            }
+            continue;
+        };
+        let _ = progress.await;
+        let stderr = errors.await.unwrap_or_default();
+        if !status.success() {
+            return Err(RenderError::Encode(format!(
+                "FFmpeg no pudo generar el video del menú HDMV: {}",
+                stderr.trim()
+            )));
+        }
+        break;
+    }
+    if !path.is_file() || std::fs::metadata(path)?.len() == 0 {
+        return Err(RenderError::Encode(
+            "FFmpeg no generó el video del menú HDMV".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 async fn run_menu_ffmpeg(
@@ -6427,6 +6613,33 @@ mod tests {
     }
 
     #[test]
+    fn title_one_of_tsmuxer_returns_to_the_menu_too() {
+        use kinodisc_hdmv::native::build_movie_object;
+        // The object tsMuxeR 2.7.0 writes for title 1 (QA 1.3.1, F-50).
+        let tsmuxer = [
+            HdmvCommand::new(0x5000_0001, 10, 0),
+            HdmvCommand::new(0x5040_0001, 0, 0),
+            HdmvCommand::new(0x5040_0001, 0, 0),
+            HdmvCommand::new(kinodisc_hdmv::OP_PLAY_PLAYLIST_PM, 0, 10),
+            HdmvCommand::new(kinodisc_hdmv::OP_BREAK, 0, 0),
+        ];
+        let root = std::env::temp_dir().join(format!("kinodisc-title-ts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let movie = build_movie_object(&tsmuxer).unwrap();
+        let (movie, menu) = kinodisc_hdmv::append_menu_movie_object(&movie, 1).unwrap();
+        std::fs::write(root.join("MovieObject.bdmv"), &movie).unwrap();
+        wire_title_one(&root, menu).unwrap();
+        let objects =
+            kinodisc_hdmv::movie_objects(&std::fs::read(root.join("MovieObject.bdmv")).unwrap())
+                .unwrap();
+        let mut expected = tsmuxer[..4].to_vec();
+        expected.push(jump_object(menu.into()));
+        assert_eq!(objects[0].1, expected);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn episode_buttons_jump_to_their_own_object_or_play_the_series() {
         let episode = EpisodeId::from_u128(7);
         let mut episode_marks = HashMap::new();
@@ -6512,6 +6725,53 @@ mod tests {
         marks.remove(&second.id);
         assert!(plan_episode_playback(&root, &order, &marks, 4).is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn repeated_episodes_get_their_own_file() {
+        let dir = std::env::temp_dir().join(format!("kinodisc-own-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let shared = dir.join("shared.mpg");
+        std::fs::write(&shared, b"episode").expect("shared");
+        let mut used = HashSet::new();
+        let first = distinct_episode_file(shared.clone(), &mut used, &dir.join("a.mpg"));
+        assert_eq!(first.expect("first"), shared);
+        let second =
+            distinct_episode_file(shared.clone(), &mut used, &dir.join("b.mpg")).expect("second");
+        assert_eq!(second, dir.join("b.mpg"));
+        assert_eq!(std::fs::read(&second).expect("copy"), b"episode");
+        assert_eq!(std::fs::read(&shared).expect("kept"), b"episode");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_the_fast_first_pass_changes_the_cache_key() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/projects/minimal.json");
+        let mut project = kinodisc_project::load_project(path).expect("fixture");
+        assert!(!full_first_pass(&project));
+        assert_eq!(first_pass_profile(&project), ":p1fast");
+        let VideoConfig::Dvd(config) = &mut project.disc.video else {
+            panic!("DVD fixture");
+        };
+        config.full_first_pass = true;
+        assert!(full_first_pass(&project));
+        assert_eq!(first_pass_profile(&project), "");
+    }
+
+    #[test]
+    fn disc_usage_keeps_the_real_size_next_to_the_plan() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/projects/minimal.json");
+        let project = kinodisc_project::load_project(path).expect("fixture");
+        let mut plan = calculate_bitrate_plan(&project, &HashMap::new()).expect("plan");
+        plan.capacity_bytes = 4_700_000_000;
+        plan.fill_ppm = 990_000;
+        // 1.3.0 planned 99 % of a DVD-5 and the image took 71 %.
+        let usage = DiscUsage::new(&plan, 3_354_005_504);
+        assert_eq!(usage.image_bytes, 3_354_005_504);
+        assert_eq!(usage.planned_bytes, 4_653_000_000);
+        assert_eq!(usage.capacity_bytes, 4_700_000_000);
     }
 
     #[tokio::test]

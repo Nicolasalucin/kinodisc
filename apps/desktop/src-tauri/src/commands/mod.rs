@@ -28,7 +28,7 @@ pub use project::{
     autosave_discard, autosave_list, autosave_write, bundle_export, bundle_import, project_new,
     project_open, project_save, startup_project_path,
 };
-pub use render::{render_cancel, render_export_folder, render_start};
+pub use render::{render_cancel, render_export_folder, render_iso_exists, render_start};
 pub use store::{job_history_list, recent_project_forget, recent_projects_list};
 pub use system::{
     logs_open, open_folder, open_release_page, system_fonts, system_shutdown, toolchain_install,

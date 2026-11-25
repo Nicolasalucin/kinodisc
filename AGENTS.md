@@ -83,9 +83,15 @@ The DVD-Video software encode path is tuned deliberately:
 
 - Scaling uses `flags=lanczos`.
 - RD/Trellis: pass 2 uses `-mbd rd -cmp rd -subcmp rd -trellis 2`. Pass 1 is
-  a light statistics pass (`-mbd rd`, no `-cmp/-subcmp`, `-trellis 0`): with
-  RD comparison, `b_strategy 2` trial-encoded every frame several times (5×
-  slower, same final PSNR). Quality options kept after timing them:
+  a light statistics pass: fast by default (`-mbd simple -b_strategy 0`, no
+  `-cmp/-subcmp`, `-trellis 0`) and, with `DvdVideoConfig.full_first_pass`,
+  the 1.3.0 one (`-mbd rd -b_strategy 2`). Always two passes: they give the
+  bits to the hard scenes (QA 1.3.1: one pass lost 1.2 VMAF there). The fast
+  pass joins the cache key as `:p1fast`. `qmin 1` is not used: it moves bits
+  from the hard scenes to the easy ones.
+- Episodes with the same source bytes share one cached encode: the second
+  title gets its own copy (`distinct_episode_file`), because DVDAuthor points
+  titles that name one file at the same cells. Quality options kept after timing them:
   `-intra_vlc 1 -last_pred 2 -mpv_flags +mv0`; `qmin 1`, `dia_size` and
   `bidir_refine` were rejected (much slower, no visible gain).
 - Interlaced output takes its field order from `setfield=tff/bff` in the
@@ -372,8 +378,8 @@ Smart Render Cache v2:
 - With a subtitle menu on a DVD, the per-title default subtitle `<pre>` is
   guarded by a choice register (g2, or g3 when Play All uses g2) that the
   menu sets, so "Sin subtítulos" is not undone at each title.
-- `publish_iso` never deletes a finished image: when the named image cannot
-  be replaced it publishes "<name> (2).iso" … "(9).iso". Folder mode renders
+- `publish_iso` replaces an earlier image of the same name (the app asks first,
+  `render_iso_exists`; the project was produced again); when that image cannot be replaced it publishes "<name> (2).iso" … "(9).iso". Folder mode renders
   to `<name>.kinodisc-tmp.iso`; the export clears only `VIDEO_TS` / `BDMV`.
 - A soundless episode makes the whole AVCHD/Blu-ray audio layout AC-3 (no
   pass-through), so the silent tracks can match it.
@@ -546,7 +552,9 @@ Smart Render Cache v2:
     on a PS4. Sending title 1 on to an episode object (compare a GPR, then
     `JumpObject`) landed in the wrong episode, so it is not done.
   - Title 1 ends with `JumpObject(root)` (`wire_title_one`); a PS4 ignores it
-    and goes to its home screen.
+    and goes to its home screen. tsMuxeR ends that object with `Break`: it is
+    replaced by the jump. Check HD discs with tsMuxeR present AND absent:
+    `MuxBackend::Auto` uses it whenever it is installed on 64-bit.
   - The HD idle wait (`HD_IDLE_MIN_MS`, 60 s) counts from when the menu
     appears; HDMV cannot see the remote.
 - **Domain**: `MenuTiming.idle_action` (`Wait`, `PlayAll`, `Intro`; read
@@ -567,9 +575,11 @@ Smart Render Cache v2:
   and a template's opaque `tpl:bg` there hid them. DVD cards read their own
   seconds (`-ss`/`-t` per input), are scaled before `loop` and repeat a
   finite number of times; never loop a whole episode or loop forever (the
-  menu never finished, or hung at its end). The motion-menu stage has a
-  stall watchdog (`MOTION_MENU_STALL`, no `-progress` line for 180 s) and
-  one retry.
+  menu never finished, or hung at its end). The menu ends with
+  `trim=end_frame` inside the graph (an output `-t` hung it). The stage has a
+  stall watchdog on the `-progress` values, never on its lines (FFmpeg repeats
+  them while stuck): `MOTION_MENU_STALL` 75 s and `MOTION_MENU_TRIES` 4 on
+  DVD, `HD_MENU_STALL` 180 s and `HD_MENU_TRIES` 3 on AVCHD and Blu-ray.
 - **Try the options** (`kinodisc-render::sample::compare_options`): four
   encodes of the current settings make the quality curve; SSIM against the
   achieved bitrate; savings within ±75 % and 0 under 0.15 dB.

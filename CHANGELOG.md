@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.3.1 nightly — 2026-11-25
+
+### Fixed (1.3.0 nightly)
+
+- **AVCHD and Blu-ray discs with a menu failed when tsMuxeR was installed** (64-bit): *"el objeto del título 1 no termina reproduciendo la serie"*. The 1.3.0 nightly has this error; discs made without tsMuxeR are not affected.
+
+### Changed
+
+- **The GOP (1, 2 or 3 seconds) is in the production window** of AVCHD and Blu-ray projects, and the DVD first pass in the one of DVD projects; they were only in **Quality VBR**, which needs the expert mode. The 3-second GOP says that no player was tested, and the grain and noise settings say what they saved in testing: nothing clear.
+- **DVD encodes start with a fast first pass.** Still two passes, which give the bits to the hard scenes; the first one now only measures the video with lighter tools. On a 60-second synthetic clip of easy and hard scenes it took 4.4 s instead of 37 s (the whole encode 25 s instead of 59 s at 4,500 kb/s) and lost about 0.1 VMAF on average, and up to 0.4 on the worst frames (1st percentile) in a second test; real films were not measured. **Full first pass (slower)** in the DVD quality panel, or `project passes <json> full`, brings back the 1.3.0 one. It replaces the **Trellis** checkbox, which the encoder never read.
+- `project show` prints the disc's video settings.
+
+### Fixed
+
+- **A DVD with the same video twice failed its own verification**: both titles pointed at one file. Each title has its own now.
+- **A card whose thumbnail was removed kept playing its episode** over its title on DVD menus.
+- **Menus on AVCHD and Blu-ray are watched like the DVD ones**: a menu that stops advancing for three minutes is encoded again (up to three tries).
+- Still DVD menus have all their frames (900 instead of 899 for 30 s in NTSC) and the sound ends with the picture.
+- The production log says when a stuck animated menu is encoded again, and a failed encode shows the lines that explain it instead of FFmpeg's banner.
+- The command line no longer asks for DVDAuthor to make an AVCHD or Blu-ray disc, and `doctor` names the optional programs that are missing.
+- `project menu --background` refuses a file that is not a readable picture; it was accepted and the menu came out plain.
+- A project saved with a byte order mark (Notepad, Windows PowerShell) opens.
+- The last time on the quality chart was cut off.
+- Japanese: the intro label in the menu list. English: "File size".
+- The app asks before it replaces an image with the same name.
+- Accessibility: the audio track list has a name, and two texts over the video preview have enough contrast.
+- A failed DVD encode names the stage in words, the intro stage is not announced for discs without one, and `project new` accepts the same video twice.
+
+- **The disc fill shown before encoding was read as the result.** It is an upper limit (easy pictures reach the encoder's best quality before they use the planned bitrate: a 2-hour DVD-5 planned at 99 % came out at 71 %). Every place that shows it now says *up to*, and when a disc is done the production window and the command line show what it really takes, next to the plan (`render.json` adds `plannedBytes` and `capacityBytes`).
+
 ## 1.3.0 nightly — 2026-11-23
 
 **Nightly build**: new and not fully tested. The navigation was checked on a PS4 with five test discs; menus on other players, the CLI project commands and the long GOPs on Blu-ray players were only checked by the tests and the disc verifier. Keep 1.2.6 for discs that must work the first time. The app's update check does not offer nightly builds.

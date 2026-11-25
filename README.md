@@ -204,6 +204,7 @@ kinodisc-cli project intro disc.json intro.mp4        # intro when the disc star
 kinodisc-cli project menu disc.json --idle intro --idle-seconds 90
 kinodisc-cli project subtitles disc.json subs/       # .srt matched to episodes by name
 kinodisc-cli project gop disc.json 2                 # AVCHD/Blu-ray GOP (1, 2 or 3 s)
+kinodisc-cli project passes disc.json full           # DVD: slower first pass (default: fast)
 kinodisc-cli split project.json --per-episode        # one project per disc
 kinodisc-cli scenes project.json                     # add scene menus from chapters
 kinodisc-cli template project.json multi-page-tv-grid  # apply a menu template (--list)

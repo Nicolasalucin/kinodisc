@@ -155,7 +155,7 @@
       <span class="text-[12px] text-slate-500">
         {episodes.length} · {formatDuration(totalDuration)}
         {#if projectStore.plan}
-          · <span class={projectStore.plan.feasible ? "text-slate-400" : "text-rose-300"}>{t("{percent} del disco", { percent: formatPercent(projectStore.planPercent) })}</span>
+          · <span class={projectStore.plan.feasible ? "text-slate-400" : "text-rose-300"}>{t("{percent} del disco", { percent: t("hasta {size}", { size: formatPercent(projectStore.planPercent) }) })}</span>
         {/if}
       </span>
       {#if episodes.length > 1}<span class="ui-hint ml-auto hidden lg:inline">{t("Arrastra para cambiar el orden")}</span>{/if}

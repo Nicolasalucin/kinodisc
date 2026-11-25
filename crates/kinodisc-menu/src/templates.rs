@@ -875,6 +875,9 @@ pub fn apply_template(
                 episode.video,
                 false,
             );
+            // Two episodes can share a title (the same file twice); names are
+            // unique inside a menu (`E_DUPLICATE_BUTTON_NAME`).
+            button.name = unique_button_name(&menu, button.name);
             menu.buttons.push(button);
         }
         add_navigation(
@@ -1138,6 +1141,17 @@ pub(crate) fn page_shell(root: &Menu, id: MenuId, template: &MenuTemplate) -> Me
     menu.transition = None;
     menu.template = None;
     menu
+}
+
+fn unique_button_name(menu: &Menu, name: String) -> String {
+    let taken = |candidate: &str| menu.buttons.iter().any(|button| button.name == candidate);
+    if !taken(&name) {
+        return name;
+    }
+    (2u32..)
+        .map(|number| format!("{name} {number}"))
+        .find(|candidate| !taken(candidate))
+        .unwrap_or(name)
 }
 
 fn default_episode_button(

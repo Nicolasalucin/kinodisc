@@ -109,7 +109,11 @@ pub(crate) async fn render(args: &RenderArgs) -> Result<PathBuf, String> {
         }
     }
 
-    let missing = kinodisc_toolchain::provision::needs_install();
+    let mut missing = kinodisc_toolchain::provision::needs_install();
+    // AVCHD and Blu-ray never run DVDAuthor or Spumux (the app's rule too).
+    if project.disc.mode == AuthoringMode::Avchd {
+        missing.retain(|download| download.id != "dvdauthor");
+    }
     if !missing.is_empty() {
         let names: Vec<&str> = missing.iter().map(|download| download.id).collect();
         return Err(format!(
@@ -168,6 +172,7 @@ pub(crate) async fn render(args: &RenderArgs) -> Result<PathBuf, String> {
                         && (message.contains("se reutiliza")
                             || message.starts_with("Reanudación")
                             || message.contains("sin recodificar")
+                            || message.starts_with("Menú animado:")
                             || message.starts_with("Intro HD")
                             || message.starts_with("Menú raíz sin elección")
                             || message.starts_with("Episodios: ")) =>
@@ -214,6 +219,14 @@ pub(crate) async fn render(args: &RenderArgs) -> Result<PathBuf, String> {
     let iso_bytes = std::fs::metadata(&iso_path)
         .map(|metadata| metadata.len())
         .unwrap_or(0);
+    let usage = outcome.usage;
+    println!(
+        "Ocupación real: {:.2} GB de {:.2} GB ({:.1}%); el plan preveía hasta {:.2} GB",
+        usage.image_bytes as f64 / 1e9,
+        usage.capacity_bytes as f64 / 1e9,
+        usage.image_bytes as f64 * 100.0 / usage.capacity_bytes.max(1) as f64,
+        usage.planned_bytes as f64 / 1e9
+    );
     // Folder output is extracted from the final image, so it is
     // byte-identical to the disc (menus, IG streams and all).
     let folder_path = if args.avchd_folder {
@@ -233,6 +246,8 @@ pub(crate) async fn render(args: &RenderArgs) -> Result<PathBuf, String> {
         "mode": mode_label,
         "iso": outcome.iso_path,
         "isoBytes": iso_bytes,
+        "plannedBytes": usage.planned_bytes,
+        "capacityBytes": usage.capacity_bytes,
         "elapsedMs": outcome.elapsed_ms,
         "regionMask": region_mask,
         "folder": folder_path.as_ref().map(|path| path.display().to_string()),

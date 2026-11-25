@@ -37,6 +37,7 @@ import {
   type SubtitleStyle_Serialize,
   type SubtitleTrack_Serialize,
   type ToolchainReport,
+  type DiscUsage,
   type VerifyReport_Serialize,
   type TvStandard,
   type VideoScaleMode,
@@ -668,6 +669,8 @@ class ProjectStore {
   renderError = $state<string | null>(null);
   renderSummary = $state<string | null>(null);
   renderVerification = $state<VerifyReport_Serialize | null>(null);
+  /** The real size of each disc made in the last run. */
+  renderUsages = $state<DiscUsage[]>([]);
   burnProgress = $state<BurnProgress | null>(null);
   burnReport = $state<BurnReport | null>(null);
   burning = $state(false);
@@ -830,13 +833,13 @@ class ProjectStore {
   }
 
   /**
-   * Short content runs at the maximum bitrate, which easy pictures do not
-   * use up: the planned size is then a ceiling, and the image comes out
-   * smaller (QA 1.2.4: 168 MB planned, 58 MB made).
+   * The planned size is always a ceiling: easy pictures reach the encoder's
+   * best quality before they use the planned bitrate (QA 1.2.4: 168 MB
+   * planned, 58 MB made; 1.3.0: a 2-hour DVD-5 planned at 99 % came out at
+   * 71 %, with no warning in the plan).
    */
   get planIsCeiling(): boolean {
-    const codes = ["W_UNDERFILL", "W_AVCHD_UNDERFILL", "W_BITRATE_CAPPED", "W_AVCHD_BITRATE_CAPPED"];
-    return Boolean(this.plan?.warnings.some((warning) => codes.includes(warning.code)));
+    return Boolean(this.plan);
   }
 
   get qualityLabel(): string {
@@ -3175,6 +3178,7 @@ class ProjectStore {
         bFrames: 2,
         twoPass: true,
         trellis: true,
+        fullFirstPass: false,
       };
       project.budget = { ...DVD_BUDGET };
     }
@@ -3287,10 +3291,11 @@ class ProjectStore {
     this.touch();
   }
 
-  setTrellis(enabled: boolean): void {
+  /** DVD: the slow first pass (both are two passes). */
+  setFullFirstPass(enabled: boolean): void {
     const project = this.project;
     if (!project || project.disc.video.kind !== "dvd") return;
-    project.disc.video.trellis = enabled;
+    project.disc.video.fullFirstPass = enabled;
     this.touch();
   }
 
@@ -3483,6 +3488,7 @@ class ProjectStore {
     this.renderError = null;
     this.renderSummary = null;
     this.renderVerification = null;
+    this.renderUsages = [];
     this.burnProgress = null;
     this.burnReport = null;
     this.burnError = null;

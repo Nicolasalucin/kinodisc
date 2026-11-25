@@ -124,7 +124,7 @@ pub fn print_plan_summary(plan: &BitratePlan) {
     }
     println!("  Video: {} kbps", plan.video_kbps);
     println!(
-        "  Llenado: {:.1}% (objetivo 99.0%)",
+        "  Llenado previsto: hasta {:.1}% (objetivo 99.0%)",
         plan.fill_ppm as f64 / 10_000.0
     );
     println!("  Viable: {}", if plan.feasible { "sí" } else { "no" });

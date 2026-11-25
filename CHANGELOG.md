@@ -6,7 +6,8 @@
 
 ### Changed
 
-- **A DVD uses the room it has when the video is easy to compress.** Animation and other clean video stopped far below the planned bitrate (2,400 kb/s of a planned 4,500 on an excerpt of Big Buck Bunny), so a disc with room to spare came out half empty and below the quality it could have had. When the first pass shows that, Kinodisc now runs it again and encodes with a finer quantiser. Measured on that excerpt with the same FFmpeg arguments: 4,351 kb/s and VMAF NEG 95.35 instead of 94.20, with the worst frames better too. Video that already reaches its bitrate is encoded as before. Still two passes; such episodes take a little longer and are encoded again.
+- **A DVD uses the room it has when the video is easy to compress.** Animation and other clean video stopped far below the planned bitrate (2,400 kb/s of a planned 4,500 on an excerpt of Big Buck Bunny), so a disc with room to spare came out half empty and below the quality it could have had. When the first pass shows that, Kinodisc now runs it again and encodes with a finer quantiser. Measured on that excerpt with the same FFmpeg arguments: 4,351 kb/s and VMAF NEG 95.35 instead of 94.20, with the worst frames better too. Measured on four film excerpts at 4,500 and 6,000 kb/s: where the rule applies the disc went from 40 to 73 % of the planned bitrate to 76 to 100 %, VMAF NEG rose 0.6 to 1.2 and the encode took about 12 % longer. Video that already reaches its bitrate is encoded as before. Still two passes; such episodes are encoded again.
+- Known limits: video whose first pass lands between 85 and 100 % of the plan still ends a little under it (the finer quantiser would cost the hardest frames there), and very easy video cannot use all of a large disc: a one-minute cartoon planned at 9,800 kb/s used 4,558. The result window says when that happens.
 
 ### Added
 

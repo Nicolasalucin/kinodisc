@@ -374,7 +374,7 @@ async fn encode(
             let video_kbps = video_kbps.clamp(1, kinodisc_dvd::DVD_MAX_VIDEO_KBPS);
             let video = kinodisc_dvd::VideoEncodeConfig {
                 video_kbps,
-                maxrate_kbps: (video_kbps + 3_000).min(kinodisc_dvd::DVD_MAX_VIDEO_KBPS),
+                maxrate_kbps: crate::dvd_maxrate_kbps(video_kbps, kinodisc_dvd::DVD_MAX_VIDEO_KBPS),
                 profile: DvdProfile::D1,
                 standard: project.disc.standard,
                 aspect: project.disc.aspect,

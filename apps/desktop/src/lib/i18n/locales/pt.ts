@@ -138,6 +138,7 @@ export const pt: Dictionary = {
   "La secuencia está vacía. Importa un vídeo y añádelo como episodio.": "A sequência está vazia. Importe um vídeo e adicione-o como episódio.",
   "Llenado previsto": "Preenchimento previsto",
   "El disco ocupa {size} de {capacity} ({percent}).": "O disco ocupa {size} de {capacity} ({percent}).",
+  "La carpeta ocupa {size}. En un disco serían {disc} de {capacity} ({percent}).": "A pasta ocupa {size}. Em um disco seriam {disc} de {capacity} ({percent}).",
   "El plan preveía hasta {planned}: el codificador no usó todo el bitrate.": "O plano previa até {planned}: o codificador não usou todo o bitrate.",
   "Los episodios se reproducen en orden. No hay menú interactivo; usa la lista para empezar y los capítulos se respetan dentro de cada episodio.": "Os episódios são reproduzidos em ordem. Não há menu interativo; use a lista para começar e os capítulos são respeitados em cada episódio.",
   "Los menús, el foco y la navegación siguen funcionando.": "Os menus, o foco e a navegação continuam funcionando.",

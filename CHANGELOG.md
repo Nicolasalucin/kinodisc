@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.3.2 nightly — 2026-11-25
+
+**Nightly build**: new and not fully tested. No DVD or Blu-ray player has played these discs.
+
+### Changed
+
+- **DVD and AVCHD 480i/576i pictures fill the frame exactly and are resized once.** A 16:9 video used to be fitted on a 854-pixel picture and then squeezed to the disc's 720: it came out one pixel narrow, with a black column at its right edge. Quality metrics punish that offset heavily. On a 60-second excerpt of Big Buck Bunny at 2,000 kb/s VMAF went from 80.0 to 94.8 (SSIM 0.955 to 0.983); on a letterboxed film (Tears of Steel), which had no offset, it stayed at 93.6. So most of that gain is the corrected geometry, not a visibly sharper picture. Episodes already encoded are encoded again.
+- **The second pass of a DVD encode is about twice as fast**, with a lighter motion comparison that measured the same picture (7.7 s instead of 17.0 s for one minute of video at 3,000 kb/s on a synthetic clip; the whole encode 42 % shorter). Still two passes.
+- DVD episodes may peak at 8 Mb/s (it was the average plus 3 Mb/s), so the encoder reaches the planned bitrate more often.
+
+### Fixed
+
+- **"Fill, cropping" on DVD distorted every picture**: it was 18.5 % too wide on a 16:9 NTSC disc (42 % on PAL, 11 % too narrow on 4:3) and a 16:9 video lost 15.6 % of its width. The crop is now worked out on the displayed picture. AVCHD and Blu-ray were not affected.
+- A disc folder shows its own size and what it would take on a disc; it showed the size of the temporary image.
+- While the app asks whether to replace an image, the window no longer says it is generating, and nothing else can be started.
+
 ## 1.3.1 nightly — 2026-11-25
 
 ### Fixed (1.3.0 nightly)

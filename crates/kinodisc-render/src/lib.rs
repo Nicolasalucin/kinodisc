@@ -70,7 +70,8 @@ pub const HDMV_MENU_PTS_90K: u64 = 54_000_000;
 /// existing cache entries are invalidated.
 /// 11 (1.2.4): AVCHD 480i/576i fit on the display canvas and tag SAR with `/`.
 /// 13 (1.3.0): x264 two-pass, B-frames, 1 s GOP, PsF on SD, BT.601, content tune.
-const ENCODER_REV: u32 = 13;
+/// 14 (1.3.2): one resample (`fit_filter`), SATD in DVD pass 2, DVD maxrate.
+const ENCODER_REV: u32 = 14;
 
 /// Upper bound for a single auxiliary FFmpeg invocation (menu clip, menu audio
 /// or subtitle extraction). Encoding jobs have their own progress timeouts.
@@ -3672,7 +3673,10 @@ async fn encode_episodes(
             .map(|entry| entry.video_kbps)
             .unwrap_or(plan.video_kbps);
         let video_kbps = planned.min(cap).max(1);
-        let maxrate_kbps = (video_kbps + 3_000).min(cap).max(video_kbps);
+        // Peaks of at least 8 Mb/s when the audio leaves room (the DVD limit
+        // is `cap`): with video + 3 Mb/s the encoder stayed 3.7 % under a
+        // 3,000 kb/s target and lost quality on hard scenes (QA 1.3.2, `m-132`).
+        let maxrate_kbps = dvd_maxrate_kbps(video_kbps, cap);
         let source_interlaced = is_interlaced(probe);
         let interlaced = picture::keeps_interlacing(&episode.filters, source_interlaced);
         let pre_filter = picture::picture_filter(
@@ -4837,6 +4841,12 @@ fn is_top_field_first(probe: &MediaProbe) -> bool {
         .and_then(|video| video.field_order.as_deref())
         .map(|order| order != "bb")
         .unwrap_or(true)
+}
+
+/// Peak video bitrate of a DVD episode: 3 Mb/s over the average, never under
+/// 8 Mb/s, inside the disc's limit.
+pub(crate) fn dvd_maxrate_kbps(video_kbps: u32, cap: u32) -> u32 {
+    (video_kbps + 3_000).max(8_000).min(cap).max(video_kbps)
 }
 
 /// The slow first pass of a DVD project (an option since 1.3.1).
@@ -6725,6 +6735,16 @@ mod tests {
         marks.remove(&second.id);
         assert!(plan_episode_playback(&root, &order, &marks, 4).is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dvd_peaks_reach_8_mbps_inside_the_disc_limit() {
+        assert_eq!(dvd_maxrate_kbps(2_000, 9_788), 8_000);
+        assert_eq!(dvd_maxrate_kbps(6_000, 9_788), 9_000);
+        assert_eq!(dvd_maxrate_kbps(9_000, 9_788), 9_788);
+        // Several audio tracks leave less room.
+        assert_eq!(dvd_maxrate_kbps(3_000, 7_500), 7_500);
+        assert_eq!(dvd_maxrate_kbps(7_800, 7_500), 7_800);
     }
 
     #[test]

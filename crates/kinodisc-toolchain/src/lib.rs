@@ -333,6 +333,68 @@ pub fn dc_precision_for_ffmpeg(args: &[String], has_intra_dc_precision: bool) ->
         .collect()
 }
 
+/// How a picture is put on the disc frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameFit {
+    /// The whole picture, with bars where it does not reach.
+    Contain,
+    /// Fills the frame and crops what does not fit.
+    Cover,
+    /// Fills the frame, changing the picture's shape.
+    Stretch,
+}
+
+/// FFmpeg filters that put any source on a `width`x`height` frame shown at
+/// `aspect` (16:9, 4:3), resampling it once.
+///
+/// Until 1.3.1 the picture was fitted on a square-pixel canvas (854x480) and
+/// then squeezed to the stored frame (720x480): two resamples. Measured on a
+/// DVD at 2,000 kb/s (QA 1.3.2, `m-132`): one resample gave VMAF NEG 94.5
+/// against 84.9, and SSIM 0.959 against 0.954.
+///
+/// The sizes come from the source's display aspect (`dar`), so anamorphic
+/// sources need no step of their own. Widths are even; heights are even, or
+/// multiples of four on interlaced frames so that bars and crops start on a
+/// field boundary.
+pub fn fit_filter(
+    width: u32,
+    height: u32,
+    aspect: (u32, u32),
+    fit: FrameFit,
+    interlaced: bool,
+) -> String {
+    fn gcd(a: u32, b: u32) -> u32 {
+        if b == 0 {
+            a.max(1)
+        } else {
+            gcd(b, a % b)
+        }
+    }
+    let divisor = gcd(aspect.0, aspect.1);
+    let (an, ad) = (aspect.0 / divisor, aspect.1 / divisor);
+    let flags = if interlaced {
+        "flags=lanczos:interl=1"
+    } else {
+        "flags=lanczos"
+    };
+    let step = if interlaced { 4 } else { 2 };
+    // True when the source is at least as wide as the disc picture.
+    let wide = format!("gte(dar*{ad},{an})");
+    match fit {
+        FrameFit::Contain => format!(
+            "scale=w='if({wide},{width},max(2,2*round({width}*dar*{ad}/{an}/2)))':\
+h='if({wide},max({step},{step}*round({height}*{an}/(dar*{ad})/{step})),{height})':{flags},\
+pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+        ),
+        FrameFit::Cover => format!(
+            "scale=w='if({wide},2*ceil({width}*dar*{ad}/{an}/2),{width})':\
+h='if({wide},{height},{step}*ceil({height}*{an}/(dar*{ad})/{step}))':{flags},\
+crop={width}:{height}"
+        ),
+        FrameFit::Stretch => format!("scale={width}:{height}:{flags}"),
+    }
+}
+
 /// Adds `-threads N` before the output path (the last argument) of an FFmpeg
 /// encode, unless the arguments already set it.
 pub fn with_thread_limit(args: &[String], threads: Option<usize>) -> Vec<String> {
@@ -1047,6 +1109,37 @@ fn extract_second_token(output: &str, prefix: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pictures_are_fitted_with_one_resample() {
+        // 720x480 shown at 16:9: bars for narrower or wider sources.
+        let contain = fit_filter(720, 480, (16, 9), FrameFit::Contain, false);
+        assert_eq!(
+            contain,
+            "scale=w='if(gte(dar*9,16),720,max(2,2*round(720*dar*9/16/2)))':\
+h='if(gte(dar*9,16),max(2,2*round(480*16/(dar*9)/2)),480)':flags=lanczos,\
+pad=720:480:(ow-iw)/2:(oh-ih)/2"
+        );
+        // The aspect is reduced (720x480 with 32:27 samples is 16:9).
+        assert_eq!(
+            fit_filter(720, 480, (720 * 32, 480 * 27), FrameFit::Contain, false),
+            contain
+        );
+        // Interlaced: field-aware scaling and heights in fours.
+        let interlaced = fit_filter(720, 576, (4, 3), FrameFit::Contain, true);
+        assert!(interlaced.contains("flags=lanczos:interl=1"));
+        assert!(interlaced.contains("max(4,4*round(576*4/(dar*3)/4))"));
+        let cover = fit_filter(1280, 720, (16, 9), FrameFit::Cover, false);
+        assert!(cover.ends_with("crop=1280:720"));
+        assert!(cover.contains("2*ceil(1280*dar*9/16/2)"));
+        assert_eq!(
+            fit_filter(352, 480, (4, 3), FrameFit::Stretch, false),
+            "scale=352:480:flags=lanczos"
+        );
+        for filter in [&contain, &interlaced, &cover] {
+            assert_eq!(filter.matches("scale=").count(), 1);
+        }
+    }
 
     fn temp_dir(label: &str) -> PathBuf {
         let unique = std::time::SystemTime::now()

@@ -79,6 +79,8 @@
   let refreshing = $state(false);
   let defaultsReady = $state(false);
   let cancelRequested = $state(false);
+  /** The "replace the image?" question is open. */
+  let asking = $state(false);
   // Several copies in a row: the same image is burned again once the user
   // has swapped the disc. `waitingIso` is set while the dialog waits for that.
   const MAX_COPIES = 20;
@@ -259,6 +261,7 @@
   );
   const canStart = $derived(
     !busy &&
+      !asking &&
       // Between copies only «Continuar» / «Detener» move things on.
       !waitingIso &&
       !blocker &&
@@ -524,7 +527,12 @@
             existing.length === 1
               ? t("Ya hay una imagen llamada «{name}» en la carpeta de salida. ¿Reemplazarla?", { name: existing[0] })
               : t("Ya hay {count} imágenes con esos nombres en la carpeta de salida. ¿Reemplazarlas?", { count: existing.length });
-          if (!(await confirmReplace(question))) {
+          // Nothing is being generated yet, and nothing else may start.
+          projectStore.rendering = false;
+          asking = true;
+          const replace = await confirmReplace(question).finally(() => (asking = false));
+          projectStore.rendering = replace;
+          if (!replace) {
             cancelRequested = true;
             projectStore.renderStage = t("Cancelado");
             projectStore.renderSummary = t("Generación cancelada.");
@@ -572,15 +580,17 @@
         );
         elapsedMs += outcome.elapsedMs;
         projectStore.renderVerification = outcome.verification ?? null;
-        projectStore.renderUsages = [...projectStore.renderUsages, outcome.usage];
         let produced = outcome.isoPath;
+        let folderBytes: number | undefined;
         if (mode === "folder") {
           projectStore.renderStage = prefix + t("Creando la carpeta del disco");
           const exported = await unwrap(
             commands.renderExportFolder(outcome.isoPath, root, partName, true, outcome.jobId),
           );
           produced = exported.folder;
+          folderBytes = exported.bytes ?? undefined;
         }
+        projectStore.renderUsages = [...projectStore.renderUsages, { ...outcome.usage, folderBytes }];
         outputs.push(produced);
         producedList = [...outputs];
         projectStore.lastIso = produced;
@@ -1045,11 +1055,16 @@
             {/if}
             {#each projectStore.renderUsages as usage, index}
               <p class="mt-1 text-[11px] text-slate-300">
-                {#if projectStore.renderUsages.length > 1}{t("Disco {index}", { index: index + 1 })} · {/if}{t("El disco ocupa {size} de {capacity} ({percent}).", {
+                {#if projectStore.renderUsages.length > 1}{t("Disco {index}", { index: index + 1 })} · {/if}{#if usage.folderBytes !== undefined}{t("La carpeta ocupa {size}. En un disco serían {disc} de {capacity} ({percent}).", {
+                  size: formatBytes(usage.folderBytes),
+                  disc: formatBytes(usage.imageBytes),
+                  capacity: formatBytes(usage.capacityBytes),
+                  percent: formatPercent((usage.imageBytes * 100) / Math.max(1, usage.capacityBytes)),
+                })}{:else}{t("El disco ocupa {size} de {capacity} ({percent}).", {
                   size: formatBytes(usage.imageBytes),
                   capacity: formatBytes(usage.capacityBytes),
                   percent: formatPercent((usage.imageBytes * 100) / Math.max(1, usage.capacityBytes)),
-                })}
+                })}{/if}
                 {#if usage.imageBytes < usage.plannedBytes * 0.95}
                   <span class="text-slate-400">{t("El plan preveía hasta {planned}: el codificador no usó todo el bitrate.", { planned: formatBytes(usage.plannedBytes) })}</span>
                 {/if}

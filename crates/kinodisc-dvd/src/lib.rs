@@ -706,37 +706,33 @@ fn encode_filter(video: &VideoEncodeConfig) -> String {
 }
 
 pub fn build_scale_filter(video: &VideoEncodeConfig) -> String {
-    let (display_width, display_height) = display_canvas(video.standard, video.aspect);
+    use kinodisc_toolchain::{fit_filter, FrameFit};
     let (target_width, target_height) = target_canvas(video.standard, video.profile);
     let sar = target_sar(video.standard, video.aspect, video.profile);
-    let scale_flags = if video.interlaced {
-        "flags=lanczos:interl=1"
-    } else {
-        "flags=lanczos"
-    };
     // DVD-Video only allows 29.97 (NTSC) or 25 (PAL) fps; without a conform
     // 23.976/24/30/50/60 fps sources keep an illegal MPEG-2 frame_rate_code.
     let fps = match video.standard {
         TvStandard::Ntsc => "fps=30000/1001,",
         TvStandard::Pal => "fps=25,",
     };
-    match video.scale_mode {
-        VideoScaleMode::Letterbox | VideoScaleMode::Contain => format!(
-            "{fps}scale=iw*sar:ih,setsar=1,\
-scale={display_width}:{display_height}:force_original_aspect_ratio=decrease:{scale_flags},\
-pad={display_width}:{display_height}:(ow-iw)/2:(oh-ih)/2,\
-scale={target_width}:{target_height}:{scale_flags},setsar={sar},format=yuv420p"
-        ),
-        VideoScaleMode::CropFill | VideoScaleMode::Cover => format!(
-            "{fps}scale=iw*sar:ih,setsar=1,\
-scale={target_width}:{target_height}:force_original_aspect_ratio=increase:{scale_flags},\
-crop={target_width}:{target_height},setsar={sar},format=yuv420p"
-        ),
-        VideoScaleMode::Stretch => format!(
-            "{fps}scale=iw*sar:ih,setsar=1,scale={target_width}:{target_height}:{scale_flags},\
-setsar={sar},format=yuv420p"
-        ),
-    }
+    let fit = match video.scale_mode {
+        VideoScaleMode::Letterbox | VideoScaleMode::Contain => FrameFit::Contain,
+        VideoScaleMode::CropFill | VideoScaleMode::Cover => FrameFit::Cover,
+        VideoScaleMode::Stretch => FrameFit::Stretch,
+    };
+    let aspect = match video.aspect {
+        AspectRatio::FourThree => (4, 3),
+        AspectRatio::SixteenNine => (16, 9),
+    };
+    // One resample, straight to the disc frame (see `fit_filter`).
+    let scale = fit_filter(
+        target_width.into(),
+        target_height.into(),
+        aspect,
+        fit,
+        video.interlaced,
+    );
+    format!("{fps}{scale},setsar={sar},format=yuv420p")
 }
 
 /// Appends a local file input with an explicit protocol whitelist so crafted
@@ -1284,6 +1280,9 @@ fn format_millis(millis: u64) -> String {
     format!("{:.3}", millis as f64 / 1000.0)
 }
 
+/// FFmpeg `-cmp`/`-subcmp` of the second pass.
+const MOTION_COMPARE: &str = "satd";
+
 fn video_codec_args(video: &VideoEncodeConfig) -> Vec<String> {
     let mut args = vec![
         "-vf".to_string(),
@@ -1308,10 +1307,13 @@ fn video_codec_args(video: &VideoEncodeConfig) -> Vec<String> {
         "rd".to_string(),
         "-trellis".to_string(),
         "2".to_string(),
+        // SATD motion comparison: the same picture as full RD comparison
+        // (VMAF NEG within 0.05, SSIM equal) with a second pass about twice
+        // as fast (QA 1.3.2, `m-132` M1A). Macroblock decision stays RD.
         "-cmp".to_string(),
-        "rd".to_string(),
+        MOTION_COMPARE.to_string(),
         "-subcmp".to_string(),
-        "rd".to_string(),
+        MOTION_COMPARE.to_string(),
         // Measured on hard content (fractal zoom + grain, PAL, 2-pass,
         // PSNR against lossless): +0.35 dB at 4.5 Mbps for +3 % time.
         // Rejected after timing them: qmin/lmin 1 (+58 % time at high
@@ -1398,15 +1400,6 @@ fn format_seconds(frames: u64, fps: FrameRate) -> String {
     format!("{:.6}", frames as f64 / fps.as_f64())
 }
 
-fn display_canvas(standard: TvStandard, aspect: AspectRatio) -> (u16, u16) {
-    match (standard, aspect) {
-        (TvStandard::Ntsc, AspectRatio::FourThree) => (640, 480),
-        (TvStandard::Ntsc, AspectRatio::SixteenNine) => (854, 480),
-        (TvStandard::Pal, AspectRatio::FourThree) => (768, 576),
-        (TvStandard::Pal, AspectRatio::SixteenNine) => (1024, 576),
-    }
-}
-
 fn target_canvas(standard: TvStandard, profile: DvdProfile) -> (u16, u16) {
     match (standard, profile) {
         (TvStandard::Ntsc, DvdProfile::HalfD1) => (352, 480),
@@ -1489,11 +1482,13 @@ mod tests {
     #[test]
     fn d1_ntsc_4_3_filter_scales_and_pads() {
         let filter = build_scale_filter(&request().video);
-        assert!(filter.contains("scale=640:480"));
-        assert!(filter.contains("pad=640:480"));
-        assert!(filter.contains("scale=720:480"));
+        // One resample, straight to 720x480 (QA 1.3.2: two made it softer).
+        assert_eq!(filter.matches("scale=").count(), 1, "{filter}");
+        assert!(filter.contains("scale=w='if(gte(dar*3,4),720,"));
+        assert!(filter.contains("pad=720:480:(ow-iw)/2:(oh-ih)/2"));
         assert!(filter.contains("setsar=8/9"));
         assert!(filter.contains("format=yuv420p"));
+        assert!(filter.starts_with("fps=30000/1001,"));
     }
 
     #[test]
@@ -1503,8 +1498,9 @@ mod tests {
             TvStandard::Pal,
             AspectRatio::SixteenNine,
         ));
-        assert!(filter.contains("scale=1024:576"));
-        assert!(filter.contains("scale=352:576"));
+        assert_eq!(filter.matches("scale=").count(), 1, "{filter}");
+        assert!(filter.contains("scale=w='if(gte(dar*9,16),352,"));
+        assert!(filter.contains("pad=352:576:"));
         assert!(filter.contains("setsar=32/11"));
     }
 
@@ -1539,8 +1535,8 @@ mod tests {
         let pass2 = build_pass2_args(&request());
         assert!(has_pair(&pass2, "-mbd", "rd"));
         assert!(has_pair(&pass2, "-trellis", "2"));
-        assert!(has_pair(&pass2, "-cmp", "rd"));
-        assert!(has_pair(&pass2, "-subcmp", "rd"));
+        assert!(has_pair(&pass2, "-cmp", "satd"));
+        assert!(has_pair(&pass2, "-subcmp", "satd"));
         assert!(!pass2.contains(&"-b_strategy".to_string()));
     }
 
@@ -1680,21 +1676,23 @@ mod tests {
             TvStandard::Ntsc,
             AspectRatio::SixteenNine,
         ));
-        assert!(letterbox.contains("force_original_aspect_ratio=decrease"));
-        assert!(letterbox.contains("pad=854:480"));
+        assert!(letterbox.contains("pad=720:480"));
+        assert!(!letterbox.contains("854"));
 
         let mut crop = video(DvdProfile::D1, TvStandard::Ntsc, AspectRatio::SixteenNine);
         crop.scale_mode = VideoScaleMode::CropFill;
         let crop_filter = build_scale_filter(&crop);
-        assert!(crop_filter.contains("force_original_aspect_ratio=increase"));
+        // The crop is worked out on the displayed picture: a 16:9 video on a
+        // 16:9 disc loses nothing (it used to lose its sides and look wide).
+        assert!(crop_filter.contains("w='if(gte(dar*9,16),2*ceil(720*dar*9/16/2),720)'"));
         assert!(crop_filter.contains("crop=720:480"));
         assert!(!crop_filter.contains("pad="));
 
         let mut stretch = video(DvdProfile::D1, TvStandard::Ntsc, AspectRatio::SixteenNine);
         stretch.scale_mode = VideoScaleMode::Stretch;
         let stretch_filter = build_scale_filter(&stretch);
-        assert!(stretch_filter.contains("scale=720:480"));
-        assert!(!stretch_filter.contains("force_original_aspect_ratio"));
+        assert!(stretch_filter.contains("scale=720:480:flags=lanczos,"));
+        assert!(!stretch_filter.contains("dar"));
         assert!(!stretch_filter.contains("pad="));
     }
 

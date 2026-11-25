@@ -58,6 +58,7 @@ export const de: Dictionary = {
   "Menús": "Menüs",
   "Llenado previsto": "Geplanter Füllstand",
   "El disco ocupa {size} de {capacity} ({percent}).": "Die Disc belegt {size} von {capacity} ({percent}).",
+  "La carpeta ocupa {size}. En un disco serían {disc} de {capacity} ({percent}).": "Der Ordner belegt {size}. Auf einer Disc wären es {disc} von {capacity} ({percent}).",
   "El plan preveía hasta {planned}: el codificador no usó todo el bitrate.": "Geplant waren bis zu {planned}: Der Encoder hat die Bitrate nicht ganz genutzt.",
   "Viable": "Machbar",
   "Advertencias": "Warnungen",

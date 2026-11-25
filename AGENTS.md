@@ -81,8 +81,13 @@ installer never ships it).
 
 The DVD-Video software encode path is tuned deliberately:
 
-- Scaling uses `flags=lanczos`.
-- RD/Trellis: pass 2 uses `-mbd rd -cmp rd -subcmp rd -trellis 2`. Pass 1 is
+- Scaling uses `flags=lanczos` and resamples the picture ONCE, straight to
+  the stored frame (`kinodisc_toolchain::fit_filter`, shared with AVCHD).
+  Never fit on a square-pixel canvas and squeeze afterwards: that second
+  resample cost about 10 VMAF NEG at 2,000 kb/s (QA 1.3.2, `m-132`) and was
+  the whole gap to DVDStyler.
+- RD/Trellis: pass 2 uses `-mbd rd -cmp satd -subcmp satd -trellis 2` (SATD
+  comparison measured equal to RD comparison at half the time). Pass 1 is
   a light statistics pass: fast by default (`-mbd simple -b_strategy 0`, no
   `-cmp/-subcmp`, `-trellis 0`) and, with `DvdVideoConfig.full_first_pass`,
   the 1.3.0 one (`-mbd rd -b_strategy 2`). Always two passes: they give the

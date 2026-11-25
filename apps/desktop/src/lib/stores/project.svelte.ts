@@ -670,7 +670,7 @@ class ProjectStore {
   renderSummary = $state<string | null>(null);
   renderVerification = $state<VerifyReport_Serialize | null>(null);
   /** The real size of each disc made in the last run. */
-  renderUsages = $state<DiscUsage[]>([]);
+  renderUsages = $state<Array<DiscUsage & { folderBytes?: number }>>([]);
   burnProgress = $state<BurnProgress | null>(null);
   burnReport = $state<BurnReport | null>(null);
   burning = $state(false);

@@ -820,60 +820,29 @@ fn sd_colour(resolution: AvchdResolution) -> (&'static str, &'static str) {
 /// and was stretched by 32/27) and wrote `setsar=32:27`, which FFmpeg reads
 /// as `sar=32` with `max=27`, so the stream said 27:1.
 pub fn build_filter(request: &AvchdEncodeRequest, spec: ResolutionSpec) -> String {
-    let interlaced = if codes_interlaced(request) {
-        ":interl=1"
-    } else {
-        ""
-    };
+    use kinodisc_toolchain::{fit_filter, FrameFit};
+    let interlaced = codes_interlaced(request);
     let sar = sar_for(request.config.resolution, request.aspect);
-    let (display_width, display_height) =
-        display_canvas(request.config.resolution, request.aspect, spec);
     let (width, height) = (spec.width, spec.height);
     let fps = format!(
         "fps={}/{}",
         request.config.frame_rate.num, request.config.frame_rate.den
     );
-    // Only the width changes between the display canvas and the stored
-    // frame, so this second scale never resamples lines (no interlace issue).
-    let squeeze = if (display_width, display_height) == (width, height) {
-        String::new()
-    } else {
-        format!("scale={width}:{height}:flags=lanczos,")
+    let fit = match request.scale_mode {
+        VideoScaleMode::Letterbox | VideoScaleMode::Contain => FrameFit::Contain,
+        VideoScaleMode::CropFill | VideoScaleMode::Cover => FrameFit::Cover,
+        VideoScaleMode::Stretch => FrameFit::Stretch,
     };
-    match request.scale_mode {
-        VideoScaleMode::Letterbox | VideoScaleMode::Contain => format!(
-            "scale=iw*sar:ih,setsar=1,\
-scale={display_width}:{display_height}:force_original_aspect_ratio=decrease:flags=lanczos{interlaced},\
-pad={display_width}:{display_height}:(ow-iw)/2:(oh-ih)/2,\
-{squeeze}setsar={}/{},{fps},format=yuv420p",
-            sar.0, sar.1
-        ),
-        VideoScaleMode::CropFill | VideoScaleMode::Cover => format!(
-            "scale=iw*sar:ih,setsar=1,\
-scale={display_width}:{display_height}:force_original_aspect_ratio=increase:flags=lanczos{interlaced},\
-crop={display_width}:{display_height},\
-{squeeze}setsar={}/{},{fps},format=yuv420p",
-            sar.0, sar.1
-        ),
-        VideoScaleMode::Stretch => format!(
-            "scale=iw*sar:ih,setsar=1,scale={width}:{height}:flags=lanczos{interlaced},\
-setsar={}/{},{fps},format=yuv420p",
-            sar.0, sar.1
-        ),
-    }
-}
-
-/// The picture as it is shown: the stored frame widened by its sample aspect
-/// ratio (HD has square pixels).
-fn display_canvas(
-    resolution: AvchdResolution,
-    aspect: AspectRatio,
-    spec: ResolutionSpec,
-) -> (u32, u32) {
-    let (num, den) = sar_for(resolution, aspect);
-    let width = (spec.width as u64 * num as u64).div_ceil(den as u64) as u32;
-    // Even widths keep 4:2:0 chroma aligned (853.3 -> 854).
-    (width + width % 2, spec.height)
+    // The stored frame as it is shown: 720x480 with 32:27 samples is 16:9.
+    // One resample, straight to the stored frame (see `fit_filter`).
+    let scale = fit_filter(
+        width,
+        height,
+        (width * sar.0, height * sar.1),
+        fit,
+        interlaced,
+    );
+    format!("{scale},setsar={}/{},{fps},format=yuv420p", sar.0, sar.1)
 }
 
 fn format_millis(millis: u64) -> String {
@@ -1940,48 +1909,53 @@ mod tests {
     }
 
     #[test]
-    fn sd_avchd_fits_on_the_display_canvas_and_tags_the_aspect_with_a_slash() {
+    fn sd_avchd_is_resampled_once_and_tags_the_aspect_with_a_slash() {
         let mut sd = request();
         sd.config.resolution = AvchdResolution::Sd480i;
         sd.config.frame_rate = FrameRate::FPS_29_97;
         sd.aspect = AspectRatio::SixteenNine;
         let spec = ResolutionSpec::from_config(&sd.config);
         let filter = build_filter(&sd, spec);
-        assert!(filter.contains("scale=854:480:force_original_aspect_ratio=decrease"));
-        assert!(filter.contains("pad=854:480:"));
-        assert!(filter.contains("scale=720:480:flags=lanczos,setsar=32/27"));
+        // One resample, straight to the stored frame (QA 1.3.2).
+        assert_eq!(filter.matches("scale=").count(), 1, "{filter}");
+        assert!(filter.contains("scale=w='if(gte(dar*9,16),720,"));
+        assert!(filter.contains("pad=720:480:"));
+        assert!(filter.contains(",setsar=32/27,"));
+        assert!(!filter.contains("854"));
         assert!(!filter.contains("setsar=32:27"));
         sd.config.resolution = AvchdResolution::Sd576i;
         sd.config.frame_rate = FrameRate { num: 25, den: 1 };
         sd.aspect = AspectRatio::FourThree;
         let spec = ResolutionSpec::from_config(&sd.config);
         let filter = build_filter(&sd, spec);
-        assert!(filter.contains("scale=768:576:force_original_aspect_ratio=decrease"));
+        assert!(filter.contains("scale=w='if(gte(dar*3,4),720,"));
+        assert!(filter.contains("pad=720:576:"));
         assert!(filter.contains("setsar=16/15"));
         // HD keeps square pixels and needs no squeeze.
         let hd = build_filter(&request(), ResolutionSpec::from_config(&config()));
         assert!(hd.contains("setsar=1/1"));
-        assert_eq!(hd.matches("scale=1280:720").count(), 1);
+        assert_eq!(hd.matches("scale=").count(), 1);
+        assert!(hd.contains("pad=1280:720:"));
     }
 
     #[test]
     fn scale_modes_map_to_avchd_filters() {
         let spec = ResolutionSpec::from_config(&config());
         let letterbox = build_filter(&request(), spec);
-        assert!(letterbox.contains("force_original_aspect_ratio=decrease"));
+        assert!(letterbox.contains("if(gte(dar*9,16),1280,"));
         assert!(letterbox.contains("pad=1280:720"));
 
         let mut crop = request();
         crop.scale_mode = VideoScaleMode::CropFill;
         let crop_filter = build_filter(&crop, spec);
-        assert!(crop_filter.contains("force_original_aspect_ratio=increase"));
+        assert!(crop_filter.contains("2*ceil(1280*dar*9/16/2)"));
         assert!(crop_filter.contains("crop=1280:720"));
 
         let mut stretch = request();
         stretch.scale_mode = VideoScaleMode::Stretch;
         let stretch_filter = build_filter(&stretch, spec);
-        assert!(stretch_filter.contains("scale=1280:720"));
-        assert!(!stretch_filter.contains("force_original_aspect_ratio"));
+        assert!(stretch_filter.contains("scale=1280:720:flags=lanczos"));
+        assert!(!stretch_filter.contains("dar"));
     }
 
     #[test]

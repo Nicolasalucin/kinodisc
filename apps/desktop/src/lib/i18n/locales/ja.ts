@@ -58,6 +58,7 @@ export const ja: Dictionary = {
   "Menús": "メニュー",
   "Llenado previsto": "予定使用率",
   "El disco ocupa {size} de {capacity} ({percent}).": "ディスクの使用量は {capacity} 中 {size}（{percent}）です。",
+  "La carpeta ocupa {size}. En un disco serían {disc} de {capacity} ({percent}).": "フォルダーのサイズは {size} です。ディスクでは {capacity} 中 {disc}（{percent}）になります。",
   "El plan preveía hasta {planned}: el codificador no usó todo el bitrate.": "予定は最大 {planned} でした。エンコーダーはビットレートを使い切りませんでした。",
   "Viable": "可能",
   "Advertencias": "警告",

@@ -9,7 +9,7 @@ use kinodisc_domain::{
 };
 pub mod scenes;
 
-use kinodisc_toolchain::{resolve_binary, MEDIA_PROTOCOL_WHITELIST};
+use kinodisc_toolchain::{resolve_binary, CpuUsage, MEDIA_PROTOCOL_WHITELIST};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -44,12 +44,15 @@ pub enum MediaError {
 #[derive(Debug, Clone)]
 pub struct Ffprobe {
     pub binary: PathBuf,
+    /// A background render probes at the lower priority of its encoders.
+    pub usage: CpuUsage,
 }
 
 impl Default for Ffprobe {
     fn default() -> Self {
         Self {
             binary: resolve_binary("ffprobe"),
+            usage: CpuUsage::default(),
         }
     }
 }
@@ -58,7 +61,14 @@ impl Ffprobe {
     pub fn new(binary: impl Into<PathBuf>) -> Self {
         Self {
             binary: binary.into(),
+            usage: CpuUsage::default(),
         }
+    }
+
+    /// Probes at a lower priority for [`CpuUsage::Background`].
+    pub fn with_cpu(mut self, usage: CpuUsage) -> Self {
+        self.usage = usage;
+        self
     }
 
     pub async fn probe(&self, path: impl AsRef<Path>) -> Result<MediaProbe, MediaError> {
@@ -68,19 +78,22 @@ impl Ffprobe {
         }
         let output = timeout(
             PROBE_TIMEOUT,
-            Command::from(kinodisc_toolchain::background_command(&self.binary))
-                .kill_on_drop(true)
-                .arg("-v")
-                .arg("error")
-                .arg("-protocol_whitelist")
-                .arg(MEDIA_PROTOCOL_WHITELIST)
-                .arg("-print_format")
-                .arg("json")
-                .arg("-show_format")
-                .arg("-show_streams")
-                .arg("-show_chapters")
-                .arg(path)
-                .output(),
+            Command::from(kinodisc_toolchain::encoder_command(
+                &self.binary,
+                self.usage,
+            ))
+            .kill_on_drop(true)
+            .arg("-v")
+            .arg("error")
+            .arg("-protocol_whitelist")
+            .arg(MEDIA_PROTOCOL_WHITELIST)
+            .arg("-print_format")
+            .arg("json")
+            .arg("-show_format")
+            .arg("-show_streams")
+            .arg("-show_chapters")
+            .arg(path)
+            .output(),
         )
         .await
         .map_err(|_| MediaError::Timeout)??;

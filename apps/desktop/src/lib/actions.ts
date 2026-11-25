@@ -22,7 +22,8 @@ function fileStem(name: string): string {
 }
 
 export async function newProject(): Promise<void> {
-  if (!(await projectStore.confirmLoseChanges())) return;
+  // The question about unsaved changes comes once, when the project is
+  // created: asking here too asked twice after «Descartar cambios».
   ui.open("newProject");
 }
 

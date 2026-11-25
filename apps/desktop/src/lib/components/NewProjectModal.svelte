@@ -119,7 +119,7 @@
     busy = true;
     localError = null;
     try {
-      await projectStore.newProject(
+      const created = await projectStore.newProject(
         name.trim() || t("Mi DVD"),
         mode === "avchd" ? avchdStandard : standard,
         mode === "avchd" ? avchdAspect : aspect,
@@ -127,7 +127,7 @@
         mode === "avchd" ? resolution : null,
         mode === "avchd" ? selectedFps : null,
       );
-      onClose();
+      if (created) onClose();
     } catch (cause) {
       localError = messageOf(cause);
     } finally {
@@ -298,6 +298,15 @@
               </select>
             </label>
           </div>
+          {#if resolution === "480i" || resolution === "576i"}
+            <label class="ui-label">
+              <span class="mb-1 block">{t("Aspecto")}</span>
+              <select class="ui-input w-full" bind:value={aspect} disabled={busy}>
+                <option value="fourThree">4:3</option>
+                <option value="sixteenNine">16:9</option>
+              </select>
+            </label>
+          {/if}
           {#if resolution === "1080p" && (effectiveFpsKey === "25" || effectiveFpsKey === "29.97")}
             <p class="flex gap-2 text-[12px] leading-5 text-slate-400"><Icon name="check" size={15} class="mt-0.5 text-emerald-400" />
               {t("Ideal para TV y video casero. Se graba como PsF (imagen progresiva en señal 1080i), compatible con todos los reproductores Blu-ray.")}

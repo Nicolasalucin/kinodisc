@@ -169,6 +169,7 @@
     // another resolution while reusing the same stage.
     void menu.canvas.width;
     void menu.canvas.height;
+    void menu.canvas.aspect;
     resize();
   });
 
@@ -176,17 +177,23 @@
     if (!stage || !wrapper || !container || !menu) return;
     const nativeWidth = menu.canvas.width;
     const nativeHeight = menu.canvas.height;
+    // DVD and AVCHD 480i/576i menus are stored 720 wide and shown at 16:9 or
+    // 4:3: the stage is stretched sideways the way the TV does it, so a
+    // circle here is a circle there. HD canvases have square pixels (1).
+    const displayAspect = menu.canvas.aspect === "fourThree" ? 4 / 3 : 16 / 9;
+    const pixelAspect = (displayAspect * nativeHeight) / nativeWidth;
+    const displayWidth = nativeWidth * pixelAspect;
     // El marco tiene 6 px de borde y el contenedor exterior 8 px de padding.
     const availableWidth = wrapper.clientWidth - 28;
     const availableHeight = wrapper.clientHeight - 28;
     if (availableWidth <= 0 || availableHeight <= 0) return;
-    const scale = Math.min(availableWidth / nativeWidth, availableHeight / nativeHeight);
-    const width = Math.max(1, Math.floor(nativeWidth * scale));
+    const scale = Math.min(availableWidth / displayWidth, availableHeight / nativeHeight);
+    const width = Math.max(1, Math.floor(displayWidth * scale));
     const height = Math.max(1, Math.floor(nativeHeight * scale));
     container.style.width = `${width + 12}px`;
     container.style.height = `${height + 12}px`;
     stage.size({ width, height });
-    stage.scale({ x: scale, y: scale });
+    stage.scale({ x: scale * pixelAspect, y: scale });
     stage.batchDraw();
   }
 

@@ -18,6 +18,11 @@
   const planSignature = $derived(projectStore.planSignature);
   const project = $derived(projectStore.project);
   const isAvchd = $derived(project?.disc.mode === "avchd");
+  const isAvchdSd = $derived(
+    project?.disc.mode === "avchd" &&
+      project.disc.video.kind === "avchd" &&
+      (project.disc.video.resolution === "480i" || project.disc.video.resolution === "576i"),
+  );
   const isBluRayCapacity = $derived(
     project?.disc.capacity === "bd25" || project?.disc.capacity === "bd50",
   );
@@ -223,6 +228,8 @@
             <option value="pal">{t("PAL")}</option>
             <option value="ntsc">{t("NTSC")}</option>
           </select>
+        {/if}
+        {#if !isAvchd || isAvchdSd}
           <span class="ui-label mb-0">{t("Pantalla")}</span>
 <select class="ui-input" value={project.disc.aspect} title={t("Relación de aspecto")}
             onchange={(event) => projectStore.setAspect(event.currentTarget.value as "fourThree" | "sixteenNine")}>

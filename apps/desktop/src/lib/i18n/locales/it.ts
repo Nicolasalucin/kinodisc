@@ -981,6 +981,7 @@ export const it: Dictionary = {
   "Carpeta donde copiar los títulos": "Cartella in cui copiare i titoli",
   "Cifrado: se puede ver, pero no importar.": "Cifrato: si può vedere, ma non importare.",
   "Disco de datos": "Disco dati",
+  "No se encuentra un vídeo del proyecto: {detail}": "Impossibile trovare un video di questo progetto: {detail}",
   "No queda lugar para otro botón: achica o mueve los botones, o aplica una plantilla de varias páginas.": "Non c'è spazio per un altro pulsante: rimpicciolisci o sposta i pulsanti, oppure applica un modello a più pagine.",
   "El proyecto tiene un problema que impide guardarlo: {detail}": "Il progetto ha un problema che ne impedisce il salvataggio: {detail}",
   "hasta {size}": "fino a {size}",

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.3 nightly — 2026-11-25
+
+**Nightly build**: new and not fully tested. No DVD or Blu-ray player has played these discs.
+
+### Fixed
+
+- **The menu editor and the simulator show DVD and AVCHD 480i/576i menus with the shape the TV gives them.** They were drawn 720 pixels wide as stored (3:2), so on a 16:9 TV everything came out 18.5 % wider than in the editor (11 % narrower on 4:3). The menu on the disc is the same; only the picture in the app changes.
+- **AVCHD 480i/576i discs can be 4:3 again**: the choice is in the new-project window, in the disc bar and in `project new --aspect 4:3`. New projects were always made 16:9.
+- "New project" asks about unsaved changes once, when the project is created. It asked twice after "Discard changes", and two questions could open at the same time.
+- **A render that cannot find a video says which one**, before it encodes anything. It used to stop later with "the system cannot find the file specified".
+- A render in "Background" mode also reads its videos at low priority.
+- The small notes under a production or burning error and the "Not found" label of a missing video or project have more contrast (the label was below the accessibility minimum in the light theme).
+
 ## 1.3.2 nightly — 2026-11-25
 
 **Nightly build**: new and not fully tested. No DVD or Blu-ray player has played these discs.
@@ -146,7 +159,7 @@ VMAF rises on every row too (+0.7 to +5.8). For the same quality that is roughly
 ### Added
 
 - **Processor use** in the production window, next to the encoder: **In the background** (one episode at a time, half the threads, low priority: the computer stays responsive), **Balanced** (recommended) or **Maximum** (every core, several episodes at once; a GPU encoder still works on one episode at a time). The disc quality and size are the same with any option; the choice is remembered. `kinodisc-cli render --cpu background|balanced|full`.
-- **AVCHD and Blu-ray episodes encode side by side**, like DVD already did. One x264 encoder on 480i/576i keeps only about half of the processor busy. Measured on a 12-thread laptop (x264 slow, 480i): one at a time used 54 % of the processor at 14.2× real time; two at a time (Balanced, on 8 threads or more) 83 % at 17.7× (25 % faster); three at a time (Maximum) 92 % at 18.4× (30 % faster). A GPU encoder still works alone.
+- **AVCHD and Blu-ray episodes encode side by side**, like DVD already did. One x264 encoder on 480i/576i keeps only about half of the processor busy. Measured on a 12-thread computer (x264 slow, 480i): one at a time used 54 % of the processor at 14.2× real time; two at a time (Balanced, on 8 threads or more) 83 % at 17.7× (25 % faster); three at a time (Maximum) 92 % at 18.4× (30 % faster). A GPU encoder still works alone.
 
 ### Fixed
 

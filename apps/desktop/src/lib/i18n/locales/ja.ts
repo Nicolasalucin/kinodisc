@@ -981,6 +981,7 @@ export const ja: Dictionary = {
   "Carpeta donde copiar los títulos": "タイトルのコピー先フォルダー",
   "Cifrado: se puede ver, pero no importar.": "暗号化されています。表示はできますが、取り込めません。",
   "Disco de datos": "データディスク",
+  "No se encuentra un vídeo del proyecto: {detail}": "このプロジェクトの動画が見つかりません: {detail}",
   "No queda lugar para otro botón: achica o mueve los botones, o aplica una plantilla de varias páginas.": "別のボタンを置く場所がありません。ボタンを小さくするか移動するか、複数ページのテンプレートを適用してください。",
   "El proyecto tiene un problema que impide guardarlo: {detail}": "プロジェクトに保存できない問題があります: {detail}",
   "hasta {size}": "最大 {size}",

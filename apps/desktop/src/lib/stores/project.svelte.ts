@@ -3213,7 +3213,11 @@ class ProjectStore {
 
   setAspect(aspect: AspectRatio): void {
     const project = this.project;
-    if (!project || project.disc.mode === "avchd" || project.disc.aspect === aspect) return;
+    if (!project || project.disc.aspect === aspect) return;
+    // HD is always 16:9; AVCHD 480i/576i can be 4:3 like a DVD.
+    const video = project.disc.video;
+    const hd = video.kind === "avchd" && video.resolution !== "480i" && video.resolution !== "576i";
+    if (project.disc.mode === "avchd" && hd) return;
     project.disc.aspect = aspect;
     for (const menu of project.menus) menu.canvas.aspect = aspect;
     this.touch();
@@ -3623,7 +3627,17 @@ class ProjectStore {
    * Asks before unsaved changes are lost (new/open/close). Returns true when
    * it is fine to continue.
    */
-  async confirmLoseChanges(): Promise<boolean> {
+  confirmLoseChanges(): Promise<boolean> {
+    // A second request while the question is open shares its answer.
+    this.losePrompt ??= this.askLoseChanges().finally(() => {
+      this.losePrompt = null;
+    });
+    return this.losePrompt;
+  }
+
+  private losePrompt: Promise<boolean> | null = null;
+
+  private async askLoseChanges(): Promise<boolean> {
     this.history.flush();
     if (!this.project || !this.dirty) return true;
     const { message } = await import("@tauri-apps/plugin-dialog");
@@ -3663,8 +3677,9 @@ class ProjectStore {
     mode: AuthoringMode,
     avchdResolution: AvchdResolution | null,
     avchdFrameRate: FrameRate | null,
-  ): Promise<void> {
-    if (!(await this.confirmLoseChanges())) return;
+  ): Promise<boolean> {
+    // False: the user chose to stay with the project that has changes.
+    if (!(await this.confirmLoseChanges())) return false;
     this.busy = true;
     this.error = null;
     try {
@@ -3673,6 +3688,7 @@ class ProjectStore {
       );
       this.projectPath = null;
       this.setProject(project);
+      return true;
     } catch (cause) {
       this.error = messageOf(cause);
       throw cause;

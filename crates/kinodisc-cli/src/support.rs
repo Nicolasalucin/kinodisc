@@ -10,12 +10,13 @@ pub async fn collect_probes(
     project: &Project,
     project_dir: &Path,
     refresh: bool,
+    usage: kinodisc_toolchain::CpuUsage,
 ) -> (HashMap<AssetId, MediaProbe>, Vec<Diagnostic>) {
     let mut probes = HashMap::new();
     let mut warnings = Vec::new();
     // FFprobe is I/O-bound: probe up to four sources at once (as the renderer
     // does) and report results in project order.
-    let ffprobe = Ffprobe::default();
+    let ffprobe = Ffprobe::default().with_cpu(usage);
     let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
     let mut pending = tokio::task::JoinSet::new();
 

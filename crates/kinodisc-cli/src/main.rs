@@ -131,7 +131,13 @@ async fn plan(args: &[String]) -> ExitCode {
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let (probes, probe_warnings) = collect_probes(&project, project_dir, args.refresh_probes).await;
+    let (probes, probe_warnings) = collect_probes(
+        &project,
+        project_dir,
+        args.refresh_probes,
+        kinodisc_toolchain::CpuUsage::default(),
+    )
+    .await;
 
     let mut plan = match calculate_bitrate_plan(&project, &probes) {
         Ok(plan) => plan,

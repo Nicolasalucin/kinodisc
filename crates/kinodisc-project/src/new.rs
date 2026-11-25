@@ -113,8 +113,16 @@ pub fn new_project(
                 return Err(errors.join("; "));
             }
             let effective_standard = avchd_standard(resolution, frame_rate);
-            // AVCHD se entrega en 16:9 incluso en SD; el SAR se ajusta en el encoder.
-            let effective_aspect = AspectRatio::SixteenNine;
+            // HD is always 16:9; 480i/576i follow the request like a DVD
+            // (the encoder sets the sample aspect ratio).
+            let effective_aspect = if matches!(
+                resolution,
+                AvchdResolution::Sd480i | AvchdResolution::Sd576i
+            ) {
+                aspect
+            } else {
+                AspectRatio::SixteenNine
+            };
             let menu_id = MenuId::new();
             let background_id = AssetId::new();
             let background = MediaAsset {

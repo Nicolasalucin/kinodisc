@@ -61,7 +61,7 @@
           </span>
           <span class="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-500">
             {#if recent.missing}
-              <span class="ui-chip text-amber-300">{t("No se encuentra")}</span>
+              <span class="ui-chip text-amber-200">{t("No se encuentra")}</span>
             {:else}
               <span class="ui-chip">{recent.discKind}</span>
             {/if}

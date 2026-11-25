@@ -125,7 +125,8 @@ pub(crate) async fn render(args: &RenderArgs) -> Result<PathBuf, String> {
     // Keep the CLI plan summary, but delegate every authoring step to the
     // unified renderer so DVD, AVCHD, Blu-ray, motion menus, HDMV IG menus,
     // subtitles and region masks behave exactly like the desktop app.
-    let (probes, probe_warnings) = collect_probes(&project, &project_dir, !args.no_probe).await;
+    let (probes, probe_warnings) =
+        collect_probes(&project, &project_dir, !args.no_probe, args.cpu).await;
     // Hand these probes to the renderer so it neither re-runs FFprobe over
     // every source nor plans with different metadata than printed here.
     for asset in &mut project.assets {

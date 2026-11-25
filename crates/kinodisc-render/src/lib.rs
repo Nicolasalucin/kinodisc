@@ -126,6 +126,9 @@ pub enum RenderError {
     Io(#[from] std::io::Error),
     #[error("no se pudo sondear los medios: {0}")]
     Media(String),
+    /// A video an episode or the intro plays is not where the project says.
+    #[error("falta un archivo de origen: {0}")]
+    MissingSource(String),
     #[error("el plan de bitrate no es viable: {0}")]
     Plan(String),
     #[error("error de codificación: {0}")]
@@ -315,9 +318,16 @@ async fn render_dvd_project(
     let cancel = options.cancel.clone();
 
     stage(&events, JobStage::Probe, "Sondeando medios").await;
-    let probe_report = collect_probes(&project, &project_dir, options.probe_assets).await;
+    let probe_report = collect_probes(
+        &project,
+        &project_dir,
+        options.probe_assets,
+        options.cpu_usage,
+    )
+    .await;
     let probes = probe_report.probes;
     let mut warnings = probe_report.warnings;
+    ensure_sources_exist(&project, &project_dir)?;
     progress(&events, JobStage::Probe, 1000).await;
 
     stage(&events, JobStage::Plan, "Calculando bitrate").await;
@@ -486,7 +496,12 @@ struct ProbeReport {
     warnings: Vec<Diagnostic>,
 }
 
-async fn collect_probes(project: &Project, project_dir: &Path, refresh: bool) -> ProbeReport {
+async fn collect_probes(
+    project: &Project,
+    project_dir: &Path,
+    refresh: bool,
+    usage: CpuUsage,
+) -> ProbeReport {
     let mut probes: HashMap<AssetId, MediaProbe> = HashMap::new();
     let mut warnings = Vec::new();
     if !refresh {
@@ -495,7 +510,7 @@ async fn collect_probes(project: &Project, project_dir: &Path, refresh: bool) ->
         }
         return ProbeReport { probes, warnings };
     }
-    let ffprobe = Ffprobe::default();
+    let ffprobe = Ffprobe::default().with_cpu(usage);
     let permits = Arc::new(tokio::sync::Semaphore::new(4));
     let mut set = tokio::task::JoinSet::new();
     for asset in &project.assets {
@@ -1637,9 +1652,16 @@ async fn render_avchd_project(
     };
 
     stage(&events, JobStage::Probe, "Sondeando medios").await;
-    let probe_report = collect_probes(&project, &project_dir, options.probe_assets).await;
+    let probe_report = collect_probes(
+        &project,
+        &project_dir,
+        options.probe_assets,
+        options.cpu_usage,
+    )
+    .await;
     let probes = probe_report.probes;
     let mut probe_warnings = probe_report.warnings;
+    ensure_sources_exist(&project, &project_dir)?;
     progress(&events, JobStage::Probe, 1000).await;
 
     stage(&events, JobStage::Plan, "Calculando bitrate HD").await;
@@ -4812,6 +4834,34 @@ async fn encode_menu_audio(
         Err(RenderError::Encode(
             String::from_utf8_lossy(&result.stderr).trim().to_string(),
         ))
+    }
+}
+
+/// Every video an episode or the intro plays must exist before anything is
+/// encoded: the encoder's own "file not found" does not say which file.
+fn ensure_sources_exist(project: &Project, project_dir: &Path) -> Result<(), RenderError> {
+    let used = project
+        .episodes
+        .iter()
+        .map(|episode| episode.video)
+        .chain(project.first_play.iter().map(|intro| intro.asset));
+    let mut missing: Vec<String> = Vec::new();
+    for id in used {
+        let Some(asset) = project.assets.iter().find(|asset| asset.id == id) else {
+            continue;
+        };
+        let Some(path) = asset_path(project_dir, asset) else {
+            continue;
+        };
+        let shown = path.display().to_string();
+        if !path.is_file() && !missing.contains(&shown) {
+            missing.push(shown);
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(RenderError::MissingSource(missing.join(", ")))
     }
 }
 

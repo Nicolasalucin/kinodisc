@@ -53,8 +53,8 @@
     <p class="font-medium">{explanation.reason}</p>
     <p class="mt-0.5 text-rose-100/80">{explanation.advice}</p>
     <details class="mt-1">
-      <summary class="cursor-pointer text-[11px] text-rose-100/60">{t("Detalles técnicos")}</summary>
-      <p class="mt-1 break-words font-mono text-[11px] text-rose-100/70">{message}</p>
+      <summary class="cursor-pointer text-[11px] text-rose-100/80">{t("Detalles técnicos")}</summary>
+      <p class="mt-1 break-words font-mono text-[11px] text-rose-100/90">{message}</p>
     </details>
   {:else}
     <p class="break-words">{message}</p>
@@ -69,6 +69,6 @@
     <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost" onclick={openLogs}>{t("Abrir registros")}</button>
   </div>
   {#if logsError}
-    <p class="mt-1 break-words text-[11px] text-rose-100/70">{logsError}</p>
+    <p class="mt-1 break-words text-[11px] text-rose-100/90">{logsError}</p>
   {/if}
 </div>

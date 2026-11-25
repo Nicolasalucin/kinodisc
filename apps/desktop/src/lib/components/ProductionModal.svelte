@@ -435,13 +435,13 @@
   }
 
   function close() {
-    if (busy) return;
+    if (busy || asking) return;
     projectStore.productionOpen = false;
   }
 
   /** Runs the production, then announces the end (sound, taskbar, shutdown). */
   async function start() {
-    if (busy || waitingIso) return;
+    if (busy || asking || waitingIso) return;
     await run();
     // Between copies nothing has ended yet: no chime, no shutdown.
     if (waitingIso) return;
@@ -810,12 +810,12 @@
         <div class="mb-4 rounded-md bg-rose-500/10 px-3 py-2 text-[12px] leading-5 text-rose-200" role="alert">
           {localError ?? projectStore.renderError ?? projectStore.burnError}
           {#if projectStore.renderError}
-            <p class="mt-1 text-[11px] text-rose-100/70">
+            <p class="mt-1 text-[11px] text-rose-100/90">
               {t("Si vuelves a generar el disco, los episodios que ya estaban codificados se reutilizan: no se empieza de cero.")}
             </p>
             <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost mt-2" onclick={openLogs}>{t("Abrir registros")}</button>
             {#if logsError}
-              <p class="mt-1 break-words text-[11px] text-rose-100/70">{logsError}</p>
+              <p class="mt-1 break-words text-[11px] text-rose-100/90">{logsError}</p>
             {/if}
           {/if}
         </div>

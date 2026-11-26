@@ -290,7 +290,7 @@ export function localizeCheck(check: { id: string; status: string; message: stri
 const RENDER_ERROR_PREFIXES: Array<[string, string]> = [
   ["error de E/S: ", "Error de lectura o escritura: {detail}"],
   ["no se pudo sondear los medios: ", "No se pudieron analizar los vídeos: {detail}"],
-  ["falta un archivo de origen: ", "No se encuentra un vídeo del proyecto: {detail}"],
+  ["falta un archivo de origen: ", "No se encuentra un archivo del proyecto: {detail}"],
   ["el plan de bitrate no es viable: ", "El contenido no entra en el disco: {detail}"],
   ["error de codificación: ", "Error al codificar el vídeo: {detail}"],
   ["error de menú: ", "Error en los menús: {detail}"],

@@ -46,7 +46,7 @@ Current verifier check IDs: `UDF-AVDP`, `UDF-VRS`, `UDF-PVD`,
 
 Current render/toolchain diagnostics relevant to future work include
 `W_BITMAP_SUBTITLE_UNSUPPORTED`, `W_PGS_LAYOUT_MISMATCH`,
-`W_PGS_DELAY_IGNORED`, `W_NATIVE_MUX_FALLBACK`, `W_HDMV_IG_ATTACH`,
+`W_PGS_DELAY_IGNORED`, `W_HDMV_IG_ATTACH`,
 `W_HDMV_IG_COMPILE`, `W_NAV_NO_NEIGHBOR`, `W_NAV_UNREACHABLE`,
 `W_AUDIO_LAYOUT_MISMATCH`, `W_BUTTON_OUTSIDE_SAFE_AREA`,
 `W_HW_ENCODER_FALLBACK` and the `W_CACHE_*` family.
@@ -68,7 +68,7 @@ Current render/toolchain diagnostics relevant to future work include
 5. **Deterministic cache.** Any render-affecting field added to a project or
    encoder path must be added to `EpisodeRenderInputs`/`inputs_hash` and bump
    `ENCODER_REV` when effective arguments change.
-6. **Native-first fallbacks.** tsMuxeR remains optional; new authoring features
+6. **Native-first.** tsMuxeR is not used (1.3.5); new authoring features
    must work on the native Rust/FFmpeg path before they are considered shipped.
 7. **No silent skipping.** Unsupported combinations produce a warning and a
    deterministic output shape, never a partially authored disc.

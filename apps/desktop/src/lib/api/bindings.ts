@@ -2272,6 +2272,8 @@ export type VideoStreamInfo_Deserialize = {
 	displayAspectRatio?: string | null,
 	pixFmt?: string | null,
 	fieldOrder?: string | null,
+	/**  Colour matrix as reported by FFprobe (`bt709`, `smpte170m`…); `unknown` when the file does not say; absent in probes saved before 1.3.5. */
+	colorSpace?: string | null,
 	bitDepth?: number | null,
 	/**  Codec profile as reported by FFprobe (`High`, `Main`…). */
 	profile?: string | null,
@@ -2291,6 +2293,8 @@ export type VideoStreamInfo_Serialize = {
 	displayAspectRatio: string | null,
 	pixFmt: string | null,
 	fieldOrder: string | null,
+	/**  Colour matrix as reported by FFprobe (`bt709`, `smpte170m`…); `unknown` when the file does not say; absent in probes saved before 1.3.5. */
+	colorSpace: string | null,
 	bitDepth: number | null,
 	/**  Codec profile as reported by FFprobe (`High`, `Main`…). */
 	profile: string | null,

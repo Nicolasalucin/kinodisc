@@ -130,7 +130,6 @@ export const DIAGNOSTIC_EN: Record<string, string> = {
   W_MENU_STANDARD_MISMATCH: "The menu canvas does not match the disc TV standard.",
   W_MOTION_LOOP_SHORTENED: "A moving thumbnail loop is shorter than one second.",
   W_MOTION_THUMBNAIL_FALLBACK: "The intro transition uses a missing clip; it will be skipped.",
-  W_NATIVE_MUX_FALLBACK: "The built-in Blu-ray muxer failed; trying again with tsMuxeR.",
   W_NAV_NO_NEIGHBOR: "A button has no neighbour in one direction and wrap-around is off.",
   W_NAV_ROUTE_APPROX: "A manual navigation link prevents perfectly symmetric navigation.",
   W_NAV_UNREACHABLE: "A button cannot be reached with the remote from the initially selected button.",

@@ -193,7 +193,9 @@ pub struct AvchdEncodeRequest {
     pub trim_start_ms: Option<u64>,
     pub trim_end_ms: Option<u64>,
     pub scale_mode: VideoScaleMode,
-    /// Picture fixes (crop, rotate, colour…) run before the scale chain.
+    /// Runs before the scale chain: what the source's colour matrix is when
+    /// the file does not say (`DiscColour::source_filter`), then the picture
+    /// fixes.
     pub pre_filter: Option<String>,
     pub fps: FrameRate,
     pub duration_ms: u64,
@@ -571,7 +573,8 @@ pub fn build_encode_args_for(request: &AvchdEncodeRequest, pass: EncodePass) -> 
         let hardware = request
             .hardware_encoder
             .filter(|_| !spec.psf && !spec.interlaced);
-        let (colour, colour_trc) = sd_colour(request.config.resolution);
+        let disc = disc_colour(request.config.resolution);
+        let colour = disc.matrix();
         let level = x264_level(&request.config);
         let codec = hardware
             .map(kinodisc_toolchain::HardwareEncoder::ffmpeg_name)
@@ -668,14 +671,8 @@ pub fn build_encode_args_for(request: &AvchdEncodeRequest, pass: EncodePass) -> 
                 x264,
             ]);
         }
-        args.extend([
-            "-color_primaries".to_string(),
-            colour.to_string(),
-            "-color_trc".to_string(),
-            colour_trc.to_string(),
-            "-colorspace".to_string(),
-            colour.to_string(),
-        ]);
+        // The disc's matrix and limited range: FFmpeg converts in the chain.
+        args.extend(disc.output_args());
         if interlaced {
             args.extend(["-flags".to_string(), "+ildct+ilme".to_string()]);
         }
@@ -802,13 +799,31 @@ pub fn build_encode_args_for(request: &AvchdEncodeRequest, pass: EncodePass) -> 
 pub const AVCHD_DEFAULT_AUDIO_KBPS: u16 = 192;
 
 /// Colour description: BT.601 for SD (525 lines SMPTE 170M, 625 lines
-/// BT.470BG), BT.709 for HD. Returns the x264/`-colorspace` name and the
-/// FFmpeg `-color_trc` name.
-fn sd_colour(resolution: AvchdResolution) -> (&'static str, &'static str) {
+/// BT.470BG), BT.709 for HD.
+pub fn disc_colour(resolution: AvchdResolution) -> kinodisc_toolchain::DiscColour {
+    use kinodisc_toolchain::DiscColour;
     match resolution {
-        AvchdResolution::Sd480i => ("smpte170m", "smpte170m"),
-        AvchdResolution::Sd576i => ("bt470bg", "gamma28"),
-        _ => ("bt709", "bt709"),
+        AvchdResolution::Sd480i => DiscColour::Ntsc601,
+        AvchdResolution::Sd576i => DiscColour::Pal601,
+        _ => DiscColour::Hd709,
+    }
+}
+
+/// Whether a stream copied to a disc of `resolution` has the disc's colour
+/// matrix already. `tag` is FFprobe's `color_space`. A stream that names no
+/// matrix is read as the disc's, like every source of that frame size; one
+/// that names another has to be re-encoded to be converted. A copied stream
+/// is not retagged.
+pub fn copy_keeps_disc_matrix(tag: Option<&str>, resolution: AvchdResolution) -> bool {
+    use kinodisc_toolchain::DiscColour;
+    if !kinodisc_toolchain::has_matrix_tag(tag) {
+        return true;
+    }
+    let tag = tag.unwrap_or_default().trim();
+    match disc_colour(resolution) {
+        DiscColour::Hd709 => tag == "bt709",
+        // The 525-line and 625-line names share one matrix.
+        DiscColour::Ntsc601 | DiscColour::Pal601 => matches!(tag, "smpte170m" | "bt470bg"),
     }
 }
 
@@ -842,7 +857,11 @@ pub fn build_filter(request: &AvchdEncodeRequest, spec: ResolutionSpec) -> Strin
         fit,
         interlaced,
     );
-    format!("{scale},setsar={}/{},{fps},format=yuv420p", sar.0, sar.1)
+    let tag = disc_colour(request.config.resolution).tag_filter();
+    format!(
+        "{scale},setsar={}/{},{fps},format=yuv420p,{tag}",
+        sar.0, sar.1
+    )
 }
 
 fn format_millis(millis: u64) -> String {
@@ -1460,6 +1479,28 @@ mod tests {
         request.hardware_encoder = None;
         request.video_copy = true;
         assert!(!two_pass(&request));
+    }
+
+    #[test]
+    fn a_copy_keeps_the_disc_matrix_unless_the_stream_names_another() {
+        for tag in [None, Some("unknown"), Some("bt709")] {
+            assert!(
+                copy_keeps_disc_matrix(tag, AvchdResolution::R1080p),
+                "{tag:?}"
+            );
+        }
+        for tag in ["smpte170m", "bt470bg", "bt2020nc", "smpte240m"] {
+            assert!(
+                !copy_keeps_disc_matrix(Some(tag), AvchdResolution::R1080p),
+                "{tag}"
+            );
+        }
+        for resolution in [AvchdResolution::Sd480i, AvchdResolution::Sd576i] {
+            for tag in [None, Some("smpte170m"), Some("bt470bg")] {
+                assert!(copy_keeps_disc_matrix(tag, resolution), "{tag:?}");
+            }
+            assert!(!copy_keeps_disc_matrix(Some("bt709"), resolution));
+        }
     }
 
     #[test]

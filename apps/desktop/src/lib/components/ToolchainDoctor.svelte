@@ -282,7 +282,7 @@
         {#if report.warnings.length > 0}
           <div class="mt-3 rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2">
             <p class="ui-section-title">{t("Avisos")}</p>
-            <ul class="mt-1 space-y-0.5 text-[12px] leading-5 text-amber-100/70">
+            <ul class="mt-1 space-y-0.5 text-[12px] leading-5 text-amber-100">
               {#each report.warnings as warning}
                 <li>· {localizeToolWarning(warning)}</li>
               {/each}

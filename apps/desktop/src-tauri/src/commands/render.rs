@@ -131,9 +131,22 @@ pub async fn render_export_folder(
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| format!("No se pudo crear la carpeta del disco: {error}"))?;
-    if remove_iso {
-        let _ = std::fs::remove_file(&iso_path);
-    }
+    let removed = remove_iso && std::fs::remove_file(&iso_path).is_ok();
+    // The production's log ends at the image: say what became of it.
+    JobLog::append_to_latest(
+        "produccion",
+        format!(
+            "Carpeta del disco creada: {} ({} archivos, {} bytes).{}",
+            destination.display(),
+            report.files,
+            report.bytes,
+            if removed {
+                " La imagen temporal se quitó."
+            } else {
+                ""
+            }
+        ),
+    );
     // The job history shows the folder, not the image that no longer exists.
     if let (Some(job_id), Ok(store)) = (job_id, Store::open_default()) {
         let _ = store.update_job_output(

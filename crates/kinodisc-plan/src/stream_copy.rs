@@ -153,6 +153,22 @@ pub fn avchd_copy_decision(
         }
         _ => {}
     }
+    // A copy converts nothing: the stream must already be in the disc's
+    // matrix (QA `rel-147`).
+    if !kinodisc_avchd::copy_keeps_disc_matrix(video.color_space.as_deref(), config.resolution) {
+        return CopyDecision::no(
+            "COPY_COLOUR",
+            format!(
+                "El vídeo declara la codificación de color «{}» y el disco usa {}; se recodifica para convertirla.",
+                video.color_space.as_deref().unwrap_or_default().trim(),
+                if kinodisc_avchd::disc_colour(config.resolution).matrix() == "bt709" {
+                    "BT.709"
+                } else {
+                    "BT.601"
+                }
+            ),
+        );
+    }
     if episode.trim_start_ms.unwrap_or(0) > 0 || episode.trim.is_some_and(|trim| trim.start > 0) {
         return CopyDecision::no(
             "COPY_TRIM",
@@ -216,6 +232,7 @@ mod tests {
                 display_aspect_ratio: None,
                 pix_fmt: Some("yuv420p".into()),
                 field_order: Some(field.into()),
+                color_space: None,
                 bit_depth: Some(8),
                 profile: Some("High".into()),
                 level: Some(41),
@@ -269,6 +286,22 @@ mod tests {
             38_000,
         );
         assert!(decision.copy, "{decision:?}");
+    }
+
+    #[test]
+    fn a_stream_that_names_another_colour_matrix_is_re_encoded() {
+        let cfg = config(AvchdResolution::R1080p, FrameRate::FPS_23_976);
+        let mut source = probe(1920, 1080, FrameRate::FPS_23_976, "progressive");
+        for tag in ["bt709", "unknown"] {
+            source.video.as_mut().unwrap().color_space = Some(tag.into());
+            let decision =
+                avchd_copy_decision(&episode(), &source, &cfg, DiscCapacity::Bd25, 38_000);
+            assert!(decision.copy, "{tag}: {decision:?}");
+        }
+        source.video.as_mut().unwrap().color_space = Some("smpte170m".into());
+        let decision = avchd_copy_decision(&episode(), &source, &cfg, DiscCapacity::Bd25, 38_000);
+        assert_eq!(decision.code, "COPY_COLOUR");
+        assert!(decision.note.contains("«smpte170m»") && decision.note.contains("BT.709"));
     }
 
     #[test]

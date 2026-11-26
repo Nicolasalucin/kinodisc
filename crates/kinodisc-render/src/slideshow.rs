@@ -170,8 +170,9 @@ pub fn chunk_args(
     let mut labels = Vec::new();
     for index in 0..images.len() {
         graph.push_str(&format!(
-            "[{index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease:out_range=tv,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={},format=yuv420p,trim=duration={}[p{index}];",
+            "[{index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease:out_range=tv,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={},format=yuv420p,{},trim=duration={}[p{index}];",
             fmt(fps),
+            SLIDE_COLOUR.tag_filter(),
             fmt(clip)
         ));
         labels.push(format!("[p{index}]"));
@@ -189,23 +190,19 @@ pub fn chunk_args(
     args
 }
 
+/// The slideshow frame is 1080 lines: BT.709, and the file says so. Until
+/// 1.3.4 the pictures were coded BT.601 and the file carried no tags (QA
+/// `pre-135`); the disc encoders still read those files as BT.601.
+const SLIDE_COLOUR: kinodisc_toolchain::DiscColour = kinodisc_toolchain::DiscColour::Hd709;
+
 fn video_codec_args(fps: f64) -> Vec<String> {
     [
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "16",
-        "-pix_fmt",
-        "yuv420p",
-        "-color_range",
-        "tv",
-        "-r",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", "-r",
     ]
     .iter()
     .map(|value| value.to_string())
     .chain(std::iter::once(fmt(fps)))
+    .chain(SLIDE_COLOUR.output_args())
     .collect()
 }
 
@@ -278,7 +275,7 @@ pub fn final_args(
 /// time (changing a photo invalidates the cached video).
 pub fn cache_key(request: &SlideshowRequest, images: &[PathBuf], music: Option<&Path>) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"kinodisc-slideshow-v2");
+    hasher.update(b"kinodisc-slideshow-v3");
     hasher.update(
         format!(
             "{}|{}|{}|{}",

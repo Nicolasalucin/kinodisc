@@ -762,6 +762,9 @@ fn print_help() {
         "  kinodisc-cli join <vídeo> <vídeo> [...] -o <unido.mp4> [--4x3] [--fps N]   (une vídeos en uno)"
     );
     println!(
+        "  kinodisc-cli slideshow <foto> [<foto> ...] -o <carpeta> [--seconds N] [--fade N] [--fps N] [--music <audio>] [--4x3]   (presentación de fotos)"
+    );
+    println!(
         "  kinodisc-cli chapters <project.json> --scenes [--sensitivity 0..1] [-o <salida.json>]   (capítulos en los cambios de escena)"
     );
     println!("  kinodisc-cli split <project.json> [--per-episode]   (un proyecto por disco)");
@@ -794,5 +797,5 @@ fn print_help() {
     println!("`plan` usa los metadatos guardados por defecto; --probe los refresca con ffprobe.");
     println!("`probe` usa FFprobe para archivos y dvd+rw-mediainfo para /dev/srX.");
     println!("`doctor` detecta FFmpeg, FFprobe, DVDAuthor, Spumux, xorriso,");
-    println!("growisofs, dvd+rw-mediainfo y tsMuxeR.");
+    println!("growisofs y dvd+rw-mediainfo.");
 }

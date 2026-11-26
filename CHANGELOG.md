@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.3.5 nightly — 2026-11-25
+
+**Nightly build**: new and not fully tested. No DVD or Blu-ray player has played these discs.
+
+### Fixed
+
+- **The colours on the disc are those of the video.** A video is stored with one of two colour codings: BT.601 (SD) or BT.709 (HD). Kinodisc now works out which one the video uses (what the file says; when it says nothing, BT.709 for a picture at least 1280 wide or more than 576 high, and BT.601 for a smaller one), converts it to the coding of the disc (BT.601 on DVD and on AVCHD 480i/576i, BT.709 on HD discs) and writes that coding in the video. Before:
+  - A Blu-ray or AVCHD made from an HD video that does not name its coding was converted as if the video were BT.601. On an excerpt of Tears of Steel, a file that does not name its coding and is taken here as BT.709, that moved red and green by 1 to 2 levels of 255 on average.
+  - A DVD made from an HD video kept the BT.709 values. DVD video is BT.601: read that way, the colours of one picture of Big Buck Bunny were 1.7 to 4.6 levels of 255 off on average.
+  - Measured on the encoded video. No player was tested.
+  - A compatible video that an AVCHD or Blu-ray takes without re-encoding is copied as it is: nothing is converted, and if the file names no coding, the disc names none for it (seen on one 1080p file). A video that names a coding other than the disc's is no longer copied: it is re-encoded, so that it is converted.
+- **Full-range video** (some phones and screen recordings: black at 0 and white at 255) is converted to the range discs use (16 to 235). It went to the disc unchanged. On the test video no sample is above 235 after the conversion; the encoded Blu-ray still has under 0.04 % of its samples above it (up to 245), added by the encoding.
+- **HD menus and photo slideshows use BT.709**, like the film next to them on the disc, and say so. They were coded BT.601 at 1080 lines without saying it. Slideshows made with earlier versions are still read as BT.601, so their colours do not change. This is about the picture: the colours of the button highlights of HD menus and of Blu-ray subtitles are still worked out the old way, and were not measured.
+- **Join videos**: a clip that does not name its colour coding, placed after one that does, was converted as if it were BT.601. Each clip is now read on its own terms.
+- **A render that cannot find a menu background, the music or the transition clip of a menu, a subtitle file or an external sound file says which one**, before it encodes anything. Until now only the videos of the episodes and the intro were checked. The message of the app says "a file", not "a video".
+- The "Not found" label in Media stays on one line.
+- On a short window the production window brings its progress, and then its result or its error, into view.
+- The Tab key stays inside the production window. It went on to the editor behind it. Closing the window gives the focus back to the button that opened it.
+- `kinodisc-cli --help` lists `slideshow`.
+- **Test quality**: after trying the filters, the figure under the picture changed from PSNR to SSIM while the verdict above it stayed the same. The two scales are not comparable (33.0 dB and 18.2 dB for the same sample of a DVD). It now keeps the PSNR of your settings and adds the SSIM next to it; with an option selected it shows the name and the SSIM of that option.
+- The log of the production window named the image inside the work folder, which is removed at the end. The log in the window names the file or the disc folder that was kept, and the saved log of a disc folder ends with the folder that was made.
+- Production window, light theme: the note about the hardware encoder had too little contrast (3.46 to 1), and the log could not be scrolled with the keyboard. Nor could the list of the structure check, when it is long enough to scroll.
+- Audio and subtitles: the format and bitrate lists of an audio track had no name for a screen reader, and in the light theme the small text over the bar of each audio track had too little contrast (4.07 to 1). That text was partly transparent. It is now solid, and so are the matching text of the subtitle tracks and the amber text of other notes.
+
+### Changed
+
+- **AVCHD and Blu-ray discs are always made by Kinodisc's own muxer.** Until now a 64-bit PC with tsMuxeR installed used tsMuxeR. Kinodisc no longer starts tsMuxeR, and the disc tools window no longer lists it. Without tsMuxeR among the tools, Kinodisc already used its own muxer. With it, the disc is now the same one: 17 pairs of test discs came out byte for byte the same with tsMuxeR among the tools and without it.
+- Videos encoded by earlier versions are encoded again the next time a project is produced: the cached copies have the old colours.
+
+### Corrected
+
+- The notes of 1.3.2 gave SSIM 0.955 to 0.983 for the excerpt of Big Buck Bunny at 2,000 kb/s. Measured again on raw files it is 0.955 to 0.982; the VMAF figures stand.
+
 ## 1.3.4 nightly — 2026-11-25
 
 **Nightly build**: new and not fully tested. No DVD or Blu-ray player has played these discs.
@@ -36,7 +69,7 @@
 
 ### Changed
 
-- **DVD and AVCHD 480i/576i pictures fill the frame exactly and are resized once.** A 16:9 video used to be fitted on a 854-pixel picture and then squeezed to the disc's 720: it came out one pixel narrow, with a black column at its right edge. Quality metrics punish that offset heavily. On a 60-second excerpt of Big Buck Bunny at 2,000 kb/s VMAF went from 80.0 to 94.8 (SSIM 0.955 to 0.983); on a letterboxed film (Tears of Steel), which had no offset, it stayed at 93.6. So most of that gain is the corrected geometry, not a visibly sharper picture. Episodes already encoded are encoded again.
+- **DVD and AVCHD 480i/576i pictures fill the frame exactly and are resized once.** A 16:9 video used to be fitted on a 854-pixel picture and then squeezed to the disc's 720: it came out one pixel narrow, with a black column at its right edge. Quality metrics punish that offset heavily. On a 60-second excerpt of Big Buck Bunny at 2,000 kb/s VMAF went from 80.0 to 94.8 (SSIM 0.955 to 0.982); on a letterboxed film (Tears of Steel), which had no offset, it stayed at 93.6. So most of that gain is the corrected geometry, not a visibly sharper picture. Episodes already encoded are encoded again.
 - **The second pass of a DVD encode is about twice as fast**, with a lighter motion comparison that measured the same picture (7.7 s instead of 17.0 s for one minute of video at 3,000 kb/s on a synthetic clip; the whole encode 42 % shorter). Still two passes.
 - DVD episodes may peak at 8 Mb/s (it was the average plus 3 Mb/s), so the encoder reaches the planned bitrate more often.
 

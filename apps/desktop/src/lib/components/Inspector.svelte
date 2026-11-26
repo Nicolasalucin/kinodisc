@@ -215,6 +215,7 @@
     COPY_PROFILE: "El perfil H.264 no es High o Main; se recodifica.",
     COPY_LEVEL: "El nivel H.264 supera el máximo del disco; se recodifica.",
     COPY_PIXEL_FORMAT: "El formato de color no es yuv420p (8 bits); se recodifica.",
+    COPY_COLOUR: "La codificación de color del vídeo no es la del disco; se recodifica para convertirla.",
     COPY_RESOLUTION: "La resolución del vídeo no coincide con la del proyecto; se recodifica.",
     COPY_FRAME_RATE: "Los fps del vídeo no coinciden con los del proyecto; se recodifica.",
     COPY_SCAN: "El barrido (progresivo/entrelazado) no coincide con el proyecto; se recodifica.",
@@ -1193,13 +1194,13 @@
               <ul class="mt-2 space-y-1">
                 {#each episode.audio as track, index (index)}
                   <li class="flex items-center justify-between gap-2 rounded border border-slate-800 bg-slate-950/50 px-1.5 py-1 text-[11px]">
-                    <span class="truncate text-amber-200/80">A{index + 1} · {track.label}</span>
+                    <span class="truncate text-amber-200">A{index + 1} · {track.label}</span>
                     <span class="font-mono text-slate-500">{track.delayMs > 0 ? "+" : ""}{track.delayMs} ms</span>
                   </li>
                 {/each}
                 {#each episode.subtitles as track, index (index)}
                   <li class="flex items-center justify-between gap-2 rounded border border-slate-800 bg-slate-950/50 px-1.5 py-1 text-[11px]">
-                    <span class="truncate text-violet-200/80">S{index + 1} · {track.label}</span>
+                    <span class="truncate text-violet-200">S{index + 1} · {track.label}</span>
                     <span class="font-mono text-slate-500">{track.delayMs > 0 ? "+" : ""}{track.delayMs} ms</span>
                   </li>
                 {/each}

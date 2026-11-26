@@ -47,27 +47,6 @@ else
     printf '[AVISO] genisoimage/mkisofs no encontrado; xorriso puede no aceptar -dvd-video\n'
 fi
 
-if [[ -x /usr/local/bin/tsMuxeR ]]; then
-    TSMUXER=/usr/local/bin/tsMuxeR
-elif command -v tsMuxeR >/dev/null 2>&1; then
-    TSMUXER="$(command -v tsMuxeR)"
-else
-    TSMUXER=""
-fi
-
-if [[ -n "$TSMUXER" ]]; then
-    banner="$("$TSMUXER" --version 2>&1 || true)"
-    if grep -qi 'tsMuxeR version' <<<"$banner"; then
-        printf '[OK]    tsMuxeR -> %s (%s)\n' "$TSMUXER" "$(grep -io 'tsMuxeR version [0-9.]*' <<<"$banner" | head -1)"
-    else
-        printf '[FALTA] tsMuxeR no mostró su banner de versión\n'
-        failures=$((failures + 1))
-    fi
-else
-    printf '[FALTA] tsMuxeR\n'
-    failures=$((failures + 1))
-fi
-
 echo
 if ! command -v ffmpeg >/dev/null 2>&1; then
     echo "Instala las dependencias con:"

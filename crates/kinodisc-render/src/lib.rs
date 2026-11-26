@@ -8,8 +8,7 @@ pub mod slideshow;
 pub mod split;
 
 use kinodisc_avchd::native::{
-    finish_avchd_tree, tsmuxer_is_available, NativeBdmvMuxer, NativeMenuRequest,
-    NativeMovieRequest, NativeMovieSubtitle,
+    finish_avchd_tree, NativeBdmvMuxer, NativeMenuRequest, NativeMovieRequest, NativeMovieSubtitle,
 };
 use kinodisc_avchd::{
     concat_mkv, write_meta, AvchdAudioConfig, AvchdEncodeRequest, AvchdEncoder, AvchdMetaRequest,
@@ -73,7 +72,9 @@ pub const HDMV_MENU_PTS_90K: u64 = 54_000_000;
 /// 14 (1.3.2): one resample (`fit_filter`), SATD in DVD pass 2, DVD maxrate.
 /// 15 (1.3.4): DVD lowers the quantiser floor when the first pass cannot
 /// spend the bitrate.
-const ENCODER_REV: u32 = 15;
+/// 16 (1.3.5): source matrix named, disc matrix and limited range asked for,
+/// frames tagged (`DiscColour`).
+const ENCODER_REV: u32 = 16;
 
 /// Upper bound for a single auxiliary FFmpeg invocation (menu clip, menu audio
 /// or subtitle extraction). Encoding jobs have their own progress timeouts.
@@ -128,7 +129,7 @@ pub enum RenderError {
     Io(#[from] std::io::Error),
     #[error("no se pudo sondear los medios: {0}")]
     Media(String),
-    /// A video an episode or the intro plays is not where the project says.
+    /// A file the disc is made from is not where the project says.
     #[error("falta un archivo de origen: {0}")]
     MissingSource(String),
     #[error("el plan de bitrate no es viable: {0}")]
@@ -162,8 +163,8 @@ pub struct RenderOptions {
     /// Hardware encoder preference for AVCHD/Blu-ray H.264. DVD-Video always
     /// stays on the CPU MPEG-2 path.
     pub hardware_encoding: EncoderPreference,
-    /// BDMV muxing backend. `Auto` keeps tsMuxeR on 64-bit hosts and uses the
-    /// native FFmpeg path on 32-bit hosts or when tsMuxeR is absent.
+    /// BDMV muxing backend. `Auto` is the native muxer on every host, also
+    /// when tsMuxeR is installed (1.3.5).
     pub mux_backend: MuxBackend,
     /// How much of the processor the encoders may take (episodes at a time,
     /// threads, priority). Never changes the disc.
@@ -308,7 +309,7 @@ pub async fn render_project_with_layers(
 }
 
 async fn render_dvd_project(
-    project: Project,
+    mut project: Project,
     project_dir: PathBuf,
     output_dir: PathBuf,
     job_id: JobId,
@@ -320,6 +321,7 @@ async fn render_dvd_project(
     let cancel = options.cancel.clone();
 
     stage(&events, JobStage::Probe, "Sondeando medios").await;
+    fill_colour_tags(&mut project, &project_dir, options.cpu_usage).await;
     let probe_report = collect_probes(
         &project,
         &project_dir,
@@ -1634,7 +1636,7 @@ fn menu_error(error: kinodisc_hdmv::HdmvError) -> RenderError {
 }
 
 async fn render_avchd_project(
-    project: Project,
+    mut project: Project,
     project_dir: PathBuf,
     output_dir: PathBuf,
     job_id: JobId,
@@ -1654,6 +1656,7 @@ async fn render_avchd_project(
     };
 
     stage(&events, JobStage::Probe, "Sondeando medios").await;
+    fill_colour_tags(&mut project, &project_dir, options.cpu_usage).await;
     let probe_report = collect_probes(
         &project,
         &project_dir,
@@ -1870,14 +1873,21 @@ async fn render_avchd_project(
         let pre_filter = if video_copy {
             None
         } else {
-            picture::picture_filter(
-                &episode.filters,
-                picture::PictureSource::from_probe(probe),
-                picture::PictureTarget {
-                    display_aspect: 16.0 / 9.0,
-                    progressive: !config.resolution.interlaced(),
-                    scale_mode: episode.scale_mode,
-                },
+            kinodisc_toolchain::chain_after(
+                source_colour(
+                    probe,
+                    &input,
+                    kinodisc_avchd::disc_colour(config.resolution),
+                ),
+                picture::picture_filter(
+                    &episode.filters,
+                    picture::PictureSource::from_probe(probe),
+                    picture::PictureTarget {
+                        display_aspect: 16.0 / 9.0,
+                        progressive: !config.resolution.interlaced(),
+                        scale_mode: episode.scale_mode,
+                    },
+                ),
             )
         };
         // A progressive (or deinterlaced) source on a 480i/576i/1080i disc is
@@ -2371,7 +2381,7 @@ async fn render_avchd_project(
     let iso_path = output_dir.join("disc.iso");
     let muxer = TsMuxer::default();
     let mux_backend = options.mux_backend.resolve();
-    let mut native_muxer = (mux_backend == MuxBackend::Native)
+    let native_muxer = (mux_backend == MuxBackend::Native)
         .then(|| NativeBdmvMuxer::default().with_cpu(options.cpu_usage));
     let native_subtitles: Vec<NativeMovieSubtitle<'_>> = meta_subtitles
         .iter()
@@ -2412,13 +2422,7 @@ async fn render_avchd_project(
             .await
         {
             Ok(report) => (report.movie_objects, bdmv_dir.join("BDMV")),
-            Err(error) if cfg!(target_pointer_width = "64") && tsmuxer_is_available() => {
-                let message = format!("El muxer nativo falló ({error}); se reintenta con tsMuxeR.");
-                warn(&events, "W_NATIVE_MUX_FALLBACK", message.clone()).await;
-                warnings.push(Diagnostic::warning("W_NATIVE_MUX_FALLBACK", message));
-                native_muxer = None;
-                mux_with_tsmuxer().await?
-            }
+            // A failure is an error: nothing is tried again with tsMuxeR.
             Err(error) => return Err(RenderError::Author(error.to_string())),
         }
     } else {
@@ -3063,6 +3067,11 @@ async fn encode_intro(
             CacheLookup::Hit(_) | CacheLookup::Miss => {}
         }
     }
+    let intro_colour = source_colour(
+        probe,
+        &input,
+        kinodisc_dvd::disc_colour(project.disc.standard),
+    );
     let request = EncodeRequest {
         input,
         output_dir: output.join("intro"),
@@ -3078,7 +3087,7 @@ async fn encode_intro(
             interlaced: is_interlaced(probe),
             top_field_first: is_top_field_first(probe),
             scale_mode: VideoScaleMode::Letterbox,
-            pre_filter: None,
+            pre_filter: intro_colour,
             full_first_pass: full_first_pass(project),
         },
         audio_tracks: first_play
@@ -3703,18 +3712,25 @@ async fn encode_episodes(
         let maxrate_kbps = dvd_maxrate_kbps(video_kbps, cap);
         let source_interlaced = is_interlaced(probe);
         let interlaced = picture::keeps_interlacing(&episode.filters, source_interlaced);
-        let pre_filter = picture::picture_filter(
-            &episode.filters,
-            picture::PictureSource::from_probe(probe),
-            picture::PictureTarget {
-                display_aspect: match project.disc.aspect {
-                    AspectRatio::SixteenNine => 16.0 / 9.0,
-                    _ => 4.0 / 3.0,
+        let pre_filter = kinodisc_toolchain::chain_after(
+            source_colour(
+                probe,
+                &input,
+                kinodisc_dvd::disc_colour(project.disc.standard),
+            ),
+            picture::picture_filter(
+                &episode.filters,
+                picture::PictureSource::from_probe(probe),
+                picture::PictureTarget {
+                    display_aspect: match project.disc.aspect {
+                        AspectRatio::SixteenNine => 16.0 / 9.0,
+                        _ => 4.0 / 3.0,
+                    },
+                    // DVD keeps interlaced sources interlaced (Auto does nothing).
+                    progressive: !source_interlaced,
+                    scale_mode: episode.scale_mode,
                 },
-                // DVD keeps interlaced sources interlaced (Auto does nothing).
-                progressive: !source_interlaced,
-                scale_mode: episode.scale_mode,
-            },
+            ),
         );
         let cache_key = if cache.is_some() {
             let source_fp = source_fingerprint_for_asset(&input, asset).await?;
@@ -4181,6 +4197,11 @@ fn build_motion_buttons(
             width: rect.width(),
             height: rect.height(),
             shape_mask: button.shape_mask,
+            source_colour: asset_source_colour(
+                project_dir,
+                asset,
+                kinodisc_dvd::disc_colour(project.disc.standard),
+            ),
         });
     }
     Ok(buttons)
@@ -4466,7 +4487,9 @@ async fn render_menus(
                         "no se pudo generar la capa de etiquetas del menú animado".to_string(),
                     )
                 })?;
-                let (motion_background, background_is_video) = match &menu.background {
+                let (motion_background, background_is_video, background_colour) = match &menu
+                    .background
+                {
                     MenuBackground::VideoLoop { asset, .. } => {
                         let background_asset = project.asset(*asset).ok_or_else(|| {
                             RenderError::Menu("fondo de vídeo inexistente".to_string())
@@ -4474,9 +4497,14 @@ async fn render_menus(
                         let path = asset_path(project_dir, background_asset).ok_or_else(|| {
                             RenderError::Menu("ruta de fondo de vídeo inválida".to_string())
                         })?;
-                        (path, true)
+                        let colour = source_colour(
+                            &background_asset.probe,
+                            &path,
+                            kinodisc_dvd::disc_colour(project.disc.standard),
+                        );
+                        (path, true, colour)
                     }
-                    MenuBackground::Static { .. } => (background_source.clone(), false),
+                    MenuBackground::Static { .. } => (background_source.clone(), false, None),
                 };
                 log(
                     events,
@@ -4494,6 +4522,7 @@ async fn render_menus(
                     &MotionMenuEncodeRequest {
                         background: motion_background,
                         background_is_video,
+                        background_colour,
                         labels_overlay,
                         buttons: motion_buttons,
                         audio_ac3: audio_ac3.clone(),
@@ -4524,6 +4553,15 @@ async fn render_menus(
                                     input,
                                     duration_ms: transition.duration_ms.max(1),
                                     easing: transition.easing,
+                                    source_colour: project.asset(transition.asset).and_then(
+                                        |asset| {
+                                            asset_source_colour(
+                                                project_dir,
+                                                asset,
+                                                kinodisc_dvd::disc_colour(project.disc.standard),
+                                            )
+                                        },
+                                    ),
                                 })
                         }),
                     },
@@ -4839,22 +4877,56 @@ async fn encode_menu_audio(
     }
 }
 
-/// Every video an episode or the intro plays must exist before anything is
-/// encoded: the encoder's own "file not found" does not say which file.
+/// Every file the disc is made from must exist before anything is encoded:
+/// the encoder's own "file not found" does not say which file. Checked: the
+/// videos of the episodes and the intro, the background, the music and the
+/// transition clip of every menu, and the subtitle and sound files of the
+/// episodes.
 fn ensure_sources_exist(project: &Project, project_dir: &Path) -> Result<(), RenderError> {
+    let menu_assets = project.menus.iter().flat_map(|menu| {
+        let background = match &menu.background {
+            MenuBackground::Static { asset } | MenuBackground::VideoLoop { asset, .. } => *asset,
+        };
+        std::iter::once(background)
+            .chain(menu.audio.iter().map(|audio| audio.asset))
+            .chain(menu.transition.iter().map(|transition| transition.asset))
+    });
     let used = project
         .episodes
         .iter()
         .map(|episode| episode.video)
-        .chain(project.first_play.iter().map(|intro| intro.asset));
-    let mut missing: Vec<String> = Vec::new();
+        .chain(project.first_play.iter().map(|intro| intro.asset))
+        .chain(menu_assets);
+    let mut paths: Vec<PathBuf> = Vec::new();
     for id in used {
         let Some(asset) = project.assets.iter().find(|asset| asset.id == id) else {
             continue;
         };
-        let Some(path) = asset_path(project_dir, asset) else {
+        // The starting background of a new project has no file.
+        if asset.is_placeholder() {
             continue;
-        };
+        }
+        if let Some(path) = asset_path(project_dir, asset) {
+            paths.push(path);
+        }
+    }
+    for episode in &project.episodes {
+        let files = episode
+            .subtitles
+            .iter()
+            .filter_map(|track| track.source_path.as_deref())
+            .chain(
+                episode
+                    .audio
+                    .iter()
+                    .filter_map(|audio| audio.source_path.as_deref()),
+            );
+        for file in files.filter(|file| !file.trim().is_empty()) {
+            paths.push(resolve_project_path(project_dir, file));
+        }
+    }
+    let mut missing: Vec<String> = Vec::new();
+    for path in paths {
         let shown = path.display().to_string();
         if !path.is_file() && !missing.contains(&shown) {
             missing.push(shown);
@@ -4865,6 +4937,79 @@ fn ensure_sources_exist(project: &Project, project_dir: &Path) -> Result<(), Ren
     } else {
         Err(RenderError::MissingSource(missing.join(", ")))
     }
+}
+
+/// Probes saved before 1.3.5 do not say whether a video names its colour
+/// matrix. Read it now, so that every chain of this render knows (episodes,
+/// menus, intro). A file that cannot be read stays as it is: untagged.
+async fn fill_colour_tags(project: &mut Project, project_dir: &Path, usage: CpuUsage) {
+    let ffprobe = Ffprobe::default().with_cpu(usage);
+    for index in 0..project.assets.len() {
+        let asset = &project.assets[index];
+        if asset.kind != MediaKind::Video
+            || asset
+                .probe
+                .video
+                .as_ref()
+                .is_none_or(|video| video.color_space.is_some())
+        {
+            continue;
+        }
+        let Some(path) = asset_path(project_dir, asset).filter(|path| path.is_file()) else {
+            continue;
+        };
+        let Ok(fresh) = ffprobe.probe(&path).await else {
+            continue;
+        };
+        if let (Some(fresh), Some(video)) =
+            (fresh.video, project.assets[index].probe.video.as_mut())
+        {
+            video.color_space = fresh.color_space;
+        }
+    }
+}
+
+/// What a chain must say first about the colour matrix of the video at
+/// `path` (`DiscColour::source_filter`): nothing when the file names it.
+pub(crate) fn source_colour(
+    probe: &MediaProbe,
+    path: &Path,
+    disc: kinodisc_toolchain::DiscColour,
+) -> Option<String> {
+    let video = probe.video.as_ref()?;
+    let hd = kinodisc_toolchain::is_hd_frame(video.width, video.height) && !is_old_slideshow(path);
+    disc.source_filter(video.color_space.as_deref(), hd)
+}
+
+/// Colour of the project's disc pictures.
+pub(crate) fn project_colour(project: &Project) -> kinodisc_toolchain::DiscColour {
+    match (&project.disc.mode, &project.disc.video) {
+        (kinodisc_domain::AuthoringMode::Avchd, VideoConfig::Avchd(config)) => {
+            kinodisc_avchd::disc_colour(config.resolution)
+        }
+        _ => kinodisc_dvd::disc_colour(project.disc.standard),
+    }
+}
+
+/// `source_colour` of a project asset.
+fn asset_source_colour(
+    project_dir: &Path,
+    asset: &kinodisc_domain::MediaAsset,
+    disc: kinodisc_toolchain::DiscColour,
+) -> Option<String> {
+    let path = asset_path(project_dir, asset)?;
+    source_colour(&asset.probe, &path, disc)
+}
+
+/// A slideshow file (`slideshow-<32 hex digits>.mp4`). Those of 1.3.4 and
+/// before carry no colour tags and are coded BT.601 at 1080 lines (QA
+/// `pre-135`); later ones are tagged, and then nobody asks.
+fn is_old_slideshow(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("slideshow-"))
+        .and_then(|name| name.strip_suffix(".mp4"))
+        .is_some_and(|key| key.len() == 32 && key.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 fn asset_path(project_dir: &Path, asset: &kinodisc_domain::MediaAsset) -> Option<PathBuf> {
@@ -4948,11 +5093,41 @@ fn gop_for(standard: TvStandard) -> u16 {
 /// and, for interlaced discs, the field order.
 fn menu_tail(spec: &MenuClipSpec) -> String {
     format!(
-        "setsar={}/{},{}",
+        "setsar={}/{},{},{}",
         spec.sar.0,
         spec.sar.1,
-        field_filter(spec.interlaced)
+        field_filter(spec.interlaced),
+        menu_colour(spec).tag_filter()
     )
+}
+
+/// Colour of an HD menu clip: that of the episodes (BT.709 on HD frames,
+/// BT.601 on 480i/576i). Until 1.3.4 the clips named none, and their
+/// pictures were coded BT.601 at 1080 lines (QA `pre-135`).
+fn menu_colour(spec: &MenuClipSpec) -> kinodisc_toolchain::DiscColour {
+    kinodisc_toolchain::DiscColour::for_frame(spec.width.into(), spec.height.into())
+}
+
+/// The colour description for `-x264-params` (x264 writes it in the VUI).
+fn menu_x264_colour(spec: &MenuClipSpec) -> String {
+    let colour = menu_colour(spec).matrix();
+    format!(":colorprim={colour}:transfer={colour}:colormatrix={colour}")
+}
+
+/// `filter,` or nothing: a source colour filter in front of a chain.
+fn colour_head(filter: &Option<String>) -> String {
+    filter
+        .as_ref()
+        .map(|filter| format!("{filter},"))
+        .unwrap_or_default()
+}
+
+/// `colour_head` of the clip's own video (nothing for pictures and black).
+fn menu_video_head(spec: &MenuClipSpec) -> String {
+    match &spec.video {
+        MenuClipVideo::Video { colour, .. } => colour_head(colour),
+        _ => String::new(),
+    }
 }
 
 fn field_filter(interlaced: bool) -> &'static str {
@@ -5035,6 +5210,8 @@ struct MenuClipOverlay {
     y: u16,
     width: u16,
     height: u16,
+    /// `DiscColour::source_filter` of a video overlay.
+    colour: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -5046,6 +5223,8 @@ enum MenuClipVideo {
         path: PathBuf,
         in_ms: u64,
         out_ms: Option<u64>,
+        /// `DiscColour::source_filter` of the video.
+        colour: Option<String>,
     },
 }
 
@@ -5054,6 +5233,8 @@ struct MenuClipTransition {
     path: PathBuf,
     duration_ms: u64,
     easing: kinodisc_domain::TransitionEasing,
+    /// `DiscColour::source_filter` of the clip.
+    colour: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -5118,6 +5299,13 @@ fn build_menu_clip_spec(
     picture: Option<(&Path, bool)>,
     format: MenuClipFormat,
 ) -> MenuClipSpec {
+    let disc = kinodisc_toolchain::DiscColour::for_frame(format.width.into(), format.height.into());
+    let colour_of = |id: kinodisc_domain::AssetId| {
+        project
+            .asset(id)
+            .filter(|asset| asset.kind == MediaKind::Video)
+            .and_then(|asset| asset_source_colour(project_dir, asset, disc))
+    };
     let video = match &menu.background {
         MenuBackground::VideoLoop {
             asset,
@@ -5148,6 +5336,7 @@ fn build_menu_clip_spec(
                     path,
                     in_ms,
                     out_ms,
+                    colour: colour_of(*asset),
                 }
             })
             .unwrap_or_default(),
@@ -5224,6 +5413,7 @@ fn build_menu_clip_spec(
                 y: y0,
                 width: x1.saturating_sub(x0).max(2),
                 height: y1.saturating_sub(y0).max(2),
+                colour: colour_of(thumbnail.asset),
             })
         })
         .collect::<Vec<_>>();
@@ -5238,6 +5428,7 @@ fn build_menu_clip_spec(
             y: 0,
             width: format.width,
             height: format.height,
+            colour: None,
         });
     }
     let transition = menu.transition.as_ref().and_then(|transition| {
@@ -5249,6 +5440,7 @@ fn build_menu_clip_spec(
                 path,
                 duration_ms: transition.duration_ms.max(1),
                 easing: transition.easing,
+                colour: colour_of(transition.asset),
             })
     });
     MenuClipSpec {
@@ -5710,8 +5902,9 @@ fn menu_overlay_filter(input: usize, overlay: &MenuClipOverlay, rate: &str) -> S
         / 1000.0)
         .ceil() as u64)
         .max(1);
+    let head = colour_head(&overlay.colour);
     format!(
-        "[{input}:v]trim=duration={loop_duration},setpts=PTS-STARTPTS,fps={rate},\
+        "[{input}:v]{head}trim=duration={loop_duration},setpts=PTS-STARTPTS,fps={rate},\
 loop=loop=-1:size={loop_frames},setpts=N/FRAME_RATE/TB,\
 scale={}:{}:force_original_aspect_ratio=decrease,\
 pad={}:{}:(ow-iw)/2:(oh-ih)/2,setsar=1[ov{}]",
@@ -5760,6 +5953,7 @@ async fn encode_menu_video_with_transition(
             path: source,
             in_ms,
             out_ms,
+            ..
         } => {
             command.args(["-stream_loop", "-1"]);
             if *in_ms > 0 {
@@ -5798,10 +5992,12 @@ async fn encode_menu_video_with_transition(
     );
     let mut filters = vec![
         format!(
-            "[{transition_input}:v]{fit},trim=duration={transition_secs:.3},setpts=PTS-STARTPTS,{fade_in},{fade_out}[tr]"
+            "[{transition_input}:v]{}{fit},trim=duration={transition_secs:.3},setpts=PTS-STARTPTS,{fade_in},{fade_out}[tr]",
+            colour_head(&transition.colour)
         ),
         format!(
-            "[0:v]{fit},trim=duration={background_secs:.3},setpts=PTS-STARTPTS[bg]"
+            "[0:v]{}{fit},trim=duration={background_secs:.3},setpts=PTS-STARTPTS[bg]",
+            menu_video_head(spec)
         ),
         "[tr][bg]concat=n=2:v=1:a=0[base]".to_string(),
     ];
@@ -5834,10 +6030,12 @@ async fn encode_menu_video_with_transition(
         "yuv420p",
         "-x264-params",
         &format!(
-            "profile=high:keyint={keyint}:min-keyint={keyint}:scenecut=0:open-gop=0:bluray-compat=1{}",
-            menu_vbv(spec)
+            "profile=high:keyint={keyint}:min-keyint={keyint}:scenecut=0:open-gop=0:bluray-compat=1{}{}",
+            menu_vbv(spec),
+            menu_x264_colour(spec)
         ),
     ]);
+    command.args(menu_colour(spec).output_args());
     if spec.interlaced {
         command.args(["-flags", "+ildct+ilme"]);
     }
@@ -5880,9 +6078,11 @@ async fn encode_menu_video(
     // x264 downgrades all-black ultrafast output to Constrained Baseline unless
     // the profile is pinned in x264 itself. HDMV expects High profile.
     let x264_params = format!(
-        "profile=high:keyint={keyint}:min-keyint={keyint}:scenecut=0:open-gop=0:bluray-compat=1{}",
-        menu_vbv(spec)
+        "profile=high:keyint={keyint}:min-keyint={keyint}:scenecut=0:open-gop=0:bluray-compat=1{}{}",
+        menu_vbv(spec),
+        menu_x264_colour(spec)
     );
+    let head = menu_video_head(spec);
     let mut command = Command::from(kinodisc_toolchain::encoder_command(
         resolve_binary("ffmpeg"),
         spec.cpu,
@@ -5901,6 +6101,7 @@ async fn encode_menu_video(
             path: source,
             in_ms,
             out_ms,
+            ..
         } => {
             command.args(["-stream_loop", "-1"]);
             if *in_ms > 0 {
@@ -5916,7 +6117,7 @@ async fn encode_menu_video(
         command.args(["-t", &format!("{duration_secs:.3}")]);
         if !matches!(spec.video, MenuClipVideo::Black) {
             let video_filter = format!(
-                "scale={}:{}:force_original_aspect_ratio=decrease,                 pad={}:{}:(ow-iw)/2:(oh-ih)/2:color=black,fps={rate},{}",
+                "{head}scale={}:{}:force_original_aspect_ratio=decrease,                 pad={}:{}:(ow-iw)/2:(oh-ih)/2:color=black,fps={rate},{}",
                 spec.width,
                 spec.height,
                 spec.width,
@@ -5929,7 +6130,7 @@ async fn encode_menu_video(
         }
     } else {
         let mut filter_graph = vec![format!(
-            "[0:v]scale={}:{}:force_original_aspect_ratio=decrease,             pad={}:{}:(ow-iw)/2:(oh-ih)/2:color=black,fps={rate},             format=yuv420p,trim=duration={duration_secs:.3},             setpts=PTS-STARTPTS[base]",
+            "[0:v]{head}scale={}:{}:force_original_aspect_ratio=decrease,             pad={}:{}:(ow-iw)/2:(oh-ih)/2:color=black,fps={rate},             format=yuv420p,trim=duration={duration_secs:.3},             setpts=PTS-STARTPTS[base]",
             spec.width, spec.height, spec.width, spec.height
         )];
         let mut current = "base".to_string();
@@ -5969,6 +6170,7 @@ async fn encode_menu_video(
         "-x264-params",
         &x264_params,
     ]);
+    command.args(menu_colour(spec).output_args());
     if spec.interlaced {
         command.args(["-flags", "+ildct+ilme"]);
     }
@@ -6431,6 +6633,7 @@ mod tests {
             y: 20,
             width: 320,
             height: 180,
+            colour: None,
         };
         let filter = menu_overlay_filter(2, &overlay, "30000/1001");
         assert!(filter.contains("trim=duration=1.500"));
@@ -6479,6 +6682,17 @@ mod tests {
                 .expect("mtime-only fingerprint")
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn old_slideshows_are_known_by_their_cache_name() {
+        assert!(is_old_slideshow(Path::new(
+            "/cache/slideshow-bb4ca1f214a415ebe1792c1667f1c59d.mp4"
+        )));
+        assert!(!is_old_slideshow(Path::new(
+            "/videos/slideshow-holiday.mp4"
+        )));
+        assert!(!is_old_slideshow(Path::new("/videos/film.mp4")));
     }
 
     #[tokio::test]

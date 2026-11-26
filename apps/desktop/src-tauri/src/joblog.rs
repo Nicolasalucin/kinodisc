@@ -72,6 +72,46 @@ impl JobLog {
         log
     }
 
+    /// Adds a line to the newest `<kind>` log: for a step that belongs to a
+    /// job whose own log is already closed (the disc folder made from the
+    /// image a production has just finished).
+    pub fn append_to_latest(kind: &str, text: impl AsRef<str>) {
+        if let Some(dir) = logs_dir() {
+            Self::append_to_latest_in(&dir, kind, text);
+        }
+    }
+
+    pub fn append_to_latest_in(dir: &Path, kind: &str, text: impl AsRef<str>) {
+        let prefix = format!("{kind}-");
+        let newest = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with(&prefix) && name.ends_with(".log")
+            })
+            .filter_map(|entry| {
+                let modified = entry.metadata().ok()?.modified().ok()?;
+                Some((modified, entry.path()))
+            })
+            .max()
+            .map(|(_, path)| path);
+        let Some(path) = newest else {
+            return;
+        };
+        let Ok(file) = std::fs::OpenOptions::new().append(true).open(&path) else {
+            return;
+        };
+        let mut log = Self {
+            file: Some(file),
+            path: Some(path),
+            redact: home_prefixes(),
+        };
+        log.line(text);
+    }
+
     fn disabled() -> Self {
         Self {
             file: None,
@@ -227,7 +267,9 @@ mod tests {
         log.line("línea uno\nlínea dos");
         let path = log.path.clone().unwrap();
         drop(log);
+        JobLog::append_to_latest_in(&dir, "produccion", "carpeta lista");
         let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.ends_with("  carpeta lista\n"), "{text}");
         assert!(text.lines().next().unwrap().contains("Kinodisc "), "{text}");
         assert!(
             text.contains("  línea uno\n") && text.contains("  línea dos\n"),

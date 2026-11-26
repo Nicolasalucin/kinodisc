@@ -1198,6 +1198,7 @@ mod tests {
                 display_aspect_ratio: None,
                 pix_fmt: None,
                 field_order: None,
+                color_space: None,
                 profile: None,
                 level: None,
                 bitrate_bps: None,

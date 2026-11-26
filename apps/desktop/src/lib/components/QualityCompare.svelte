@@ -270,12 +270,18 @@
           aria-label={t("Comparar")}
         />
         <div class="mt-2 flex flex-wrap items-baseline justify-between gap-2">
-          <p class="text-[14px] font-medium {verdict.tone}">{verdict.label}</p>
+          {#if comparison && shown >= 0}
+            <!-- The verdict and the PSNR are those of the current settings: an
+                 option shows its own name and its own figure. -->
+            <p class="text-[14px] font-medium text-slate-200">{optionLabel(comparison.options[shown].option)}</p>
+          {:else}
+            <p class="text-[14px] font-medium {verdict.tone}">{verdict.label}</p>
+          {/if}
           <p class="font-mono text-[12px] text-slate-400">
-            {#if comparison}
-              SSIM {(shown < 0 ? comparison.currentSsimDb : comparison.options[shown]?.ssimDb ?? 0)?.toFixed(2)} dB
+            {#if comparison && shown >= 0}
+              SSIM {(comparison.options[shown]?.ssimDb ?? 0).toFixed(2)} dB
             {:else}
-              PSNR {(sample.psnrDb ?? 0).toFixed(1)} dB
+              PSNR {(sample.psnrDb ?? 0).toFixed(1)} dB{comparison ? ` · SSIM ${(comparison.currentSsimDb ?? 0).toFixed(2)} dB` : ""}
             {/if} · {seconds(sample.startMs ?? 0)}–{seconds((sample.startMs ?? 0) + (sample.seconds ?? 0) * 1000)}
           </p>
         </div>

@@ -386,9 +386,9 @@
                 <div class="min-w-0 flex-1">
                   <p class="truncate text-[13px] {projectStore.isAssetMissing(asset.id) ? 'text-slate-400' : 'text-slate-100'}">{basename(asset.displayName)}</p>
                   {#if projectStore.isAssetMissing(asset.id)}
-                    <p class="flex items-center gap-1.5 text-[11px]">
-                      <span class="ui-chip text-amber-200">{t("No se encuentra")}</span>
-                      <button type="button" class="text-cyan-300 hover:underline" onclick={() => locate(asset)}>{t("Buscar archivo…")}</button>
+                    <p class="flex min-w-0 items-center gap-1.5 text-[11px]">
+                      <span class="ui-chip shrink-0 whitespace-nowrap text-amber-200">{t("No se encuentra")}</span>
+                      <button type="button" class="min-w-0 truncate text-cyan-300 hover:underline" title={t("Buscar archivo…")} onclick={() => locate(asset)}>{t("Buscar archivo…")}</button>
                     </p>
                   {:else}
                     <p class="truncate text-[11px] text-slate-400">{assetMeta(asset)}</p>

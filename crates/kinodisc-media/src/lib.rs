@@ -170,6 +170,8 @@ struct FfprobeStream {
     #[serde(default)]
     field_order: Option<String>,
     #[serde(default)]
+    color_space: Option<String>,
+    #[serde(default)]
     bits_per_raw_sample: Option<String>,
     #[serde(default)]
     bits_per_sample: Option<u32>,
@@ -224,6 +226,13 @@ fn parse_probe_json(bytes: &[u8]) -> Result<MediaProbe, MediaError> {
                 display_aspect_ratio: stream.display_aspect_ratio.clone(),
                 pix_fmt: stream.pix_fmt.clone(),
                 field_order: stream.field_order.clone(),
+                // FFprobe leaves the key out for an untagged stream.
+                color_space: Some(
+                    stream
+                        .color_space
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                ),
                 bit_depth: stream
                     .bits_per_raw_sample
                     .as_deref()

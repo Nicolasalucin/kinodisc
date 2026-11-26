@@ -235,9 +235,11 @@ Smart Render Cache v2:
 
 - `kinodisc-hdmv::native` emits canonical INDX0200/MOBJ0200/MPLS0200/HDMV0200
   structures; keep its tests and the `kinodisc-verify` integration test green.
-- tsMuxeR is optional. `MuxBackend::Auto` chooses native on 32-bit hosts or
-  when tsMuxeR is absent, and tsMuxeR otherwise. A native failure on 64-bit may
-  fall back with `W_NATIVE_MUX_FALLBACK`; on 32-bit it must fail structurally.
+- tsMuxeR is not used (1.3.5, owner's decision). `MuxBackend::Auto` is the
+  native muxer on every host, also when tsMuxeR is installed, and a native
+  failure is an error: nothing is tried again with tsMuxeR. The doctor does
+  not look for it. `KINODISC_MUXER=tsmuxer` asks for it by name: a switch for
+  tests, not a feature. Its files stay the byte reference (section 22).
 - Portable discovery checks `KINODISC_TOOLCHAIN_DIR`, `<exe>/toolchain/`,
   `<exe>/bin/` and platform-arch variants before resources and PATH.
 - Native menu clips are encoded to **Matroska** (`menu.mkv`), not raw
@@ -250,7 +252,10 @@ Smart Render Cache v2:
 - 1080p 25/29.97 is **PsF** (`HdScan::Psf`): x264 `fake-interlaced=1:pic-struct=1`,
   CPU only, signalled as 1080i in BDMV. 1080p 50/59.94 forces Level 4.2.
 - `kinodisc-plan::stream_copy::avchd_copy_decision` is the single authority
-  for Smart Stream Copy; unknown probe data means re-encode. The render reads
+  for Smart Stream Copy; unknown probe data means re-encode. A copy converts
+  nothing and is not retagged: a stream that names a colour matrix other than
+  the disc's is re-encoded (`COPY_COLOUR`), and one that names none stays
+  untagged on the disc. The render reads
   the decision from the plan (`EpisodeBitrate.stream_copy`) and includes it in
   the cache `profile`.
 - `reconcile_episode_audio` and `harmonize_avchd_audio` run before every
@@ -565,7 +570,7 @@ Smart Render Cache v2:
   - Title 1 ends with `JumpObject(root)` (`wire_title_one`); a PS4 ignores it
     and goes to its home screen. tsMuxeR ends that object with `Break`: it is
     replaced by the jump. Check HD discs with tsMuxeR present AND absent:
-    `MuxBackend::Auto` uses it whenever it is installed on 64-bit.
+    with it installed, it must not be started (until 1.3.4 `Auto` used it).
   - The HD idle wait (`HD_IDLE_MIN_MS`, 60 s) counts from when the menu
     appears; HDMV cannot see the remote.
 - **Domain**: `MenuTiming.idle_action` (`Wait`, `PlayAll`, `Intro`; read
@@ -644,8 +649,8 @@ FreeBSD (CI uses a native VM):
 cargo check --workspace --exclude kinodisc-desktop
 ```
 
-Ignored render smoke tests (require FFmpeg, DVDAuthor, Spumux, xorriso, tsMuxeR
-and fixtures):
+Ignored render smoke tests (require FFmpeg, DVDAuthor, Spumux and fixtures;
+xorriso is optional and tsMuxeR is not used):
 
 ```bash
 cargo test -p kinodisc-render --test render_smoke -- --ignored

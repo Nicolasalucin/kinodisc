@@ -203,6 +203,8 @@ struct Setup<'a> {
     episode: &'a Episode,
     input: PathBuf,
     source: Option<PictureSource>,
+    /// `DiscColour::source_filter` of the episode's video.
+    colour: Option<String>,
     fps: FrameRate,
     start: u64,
     seconds: u64,
@@ -255,6 +257,7 @@ async fn prepare<'a>(
     Ok(Setup {
         project,
         episode,
+        colour: crate::source_colour(&probe, &input, crate::project_colour(project)),
         input,
         source: PictureSource::from_probe(&probe),
         fps,
@@ -280,14 +283,17 @@ async fn encode(
     match (&project.disc.mode, &project.disc.video) {
         (AuthoringMode::Avchd, VideoConfig::Avchd(config)) => {
             let progressive = !config.resolution.interlaced();
-            let pre = picture_filter(
-                variant.filters,
-                source,
-                PictureTarget {
-                    display_aspect: 16.0 / 9.0,
-                    progressive,
-                    scale_mode: episode.scale_mode,
-                },
+            let pre = kinodisc_toolchain::chain_after(
+                setup.colour.clone(),
+                picture_filter(
+                    variant.filters,
+                    source,
+                    PictureTarget {
+                        display_aspect: 16.0 / 9.0,
+                        progressive,
+                        scale_mode: episode.scale_mode,
+                    },
+                ),
             );
             let blu_ray = project.disc.capacity.is_blu_ray();
             let max = if blu_ray {
@@ -358,18 +364,21 @@ async fn encode(
                 variant.filters,
                 source.is_some_and(|source| source.interlaced),
             );
-            let pre = picture_filter(
-                variant.filters,
-                source,
-                PictureTarget {
-                    display_aspect: if project.disc.aspect == AspectRatio::SixteenNine {
-                        16.0 / 9.0
-                    } else {
-                        4.0 / 3.0
+            let pre = kinodisc_toolchain::chain_after(
+                setup.colour.clone(),
+                picture_filter(
+                    variant.filters,
+                    source,
+                    PictureTarget {
+                        display_aspect: if project.disc.aspect == AspectRatio::SixteenNine {
+                            16.0 / 9.0
+                        } else {
+                            4.0 / 3.0
+                        },
+                        progressive: !source.is_some_and(|source| source.interlaced),
+                        scale_mode: episode.scale_mode,
                     },
-                    progressive: !source.is_some_and(|source| source.interlaced),
-                    scale_mode: episode.scale_mode,
-                },
+                ),
             );
             let video_kbps = video_kbps.clamp(1, kinodisc_dvd::DVD_MAX_VIDEO_KBPS);
             let video = kinodisc_dvd::VideoEncodeConfig {
@@ -427,6 +436,10 @@ async fn reference(setup: &Setup<'_>, chain: String, out_dir: &Path) -> Result<P
         "-c:v".into(),
         "ffv1".into(),
     ]);
+    // The disc's matrix and range, as the encode asks for them: the two
+    // pictures of a metric must be coded and tagged alike (a scoring
+    // graph converts one of them when the tags differ, QA `cmp-143`).
+    args.extend(crate::project_colour(setup.project).output_args());
     args.push(reference.display().to_string());
     ffmpeg(args).await?;
     Ok(reference)

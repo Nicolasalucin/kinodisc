@@ -188,7 +188,7 @@ async fn renders_fixture_with_external_subtitle_to_iso() {
 }
 
 #[tokio::test]
-#[ignore = "render BD-25 con menú HDMV IG; requiere ffmpeg/tsMuxeR y fixtures"]
+#[ignore = "render BD-25 con menú HDMV IG; requiere ffmpeg y fixtures"]
 async fn renders_bd25_with_native_hdmv_menu() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let project_path = root.join("fixtures/projects/bd25-menu.json");
@@ -209,15 +209,14 @@ async fn renders_bd25_with_native_hdmv_menu() {
     assert!(output.join("avchd/BDMV/PLAYLIST/00001.mpls").is_file());
     assert!(output.join("avchd/BDMV/CLIPINF/00001.clpi").is_file());
     assert!(output.join("avchd/BDMV/STREAM/00001.m2ts").is_file());
-    // tsMuxeR writes a .meta file; the native muxer does not need one.
-    if kinodisc_avchd::native::tsmuxer_is_available() {
-        assert!(output.join("menus/clip-00/menu.meta").is_file());
-    }
+    // tsMuxeR writes a .meta file. Kinodisc muxes the disc itself, also on a
+    // host where tsMuxeR is installed, so there is none.
+    assert!(!output.join("menus/clip-00/menu.meta").exists());
     let _ = std::fs::remove_dir_all(output);
 }
 
 #[tokio::test]
-#[ignore = "render AVCHD DVD5 con menú HDMV IG; requiere ffmpeg/tsMuxeR y fixtures"]
+#[ignore = "render AVCHD DVD5 con menú HDMV IG; requiere ffmpeg y fixtures"]
 async fn renders_avchd_dvd5_with_native_hdmv_menu() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let project_path = root.join("fixtures/projects/bd25-menu.json");
@@ -254,7 +253,7 @@ async fn renders_avchd_dvd5_with_native_hdmv_menu() {
 }
 
 #[tokio::test]
-#[ignore = "render BD-25 con menús HDMV anidados y audio; requiere ffmpeg/tsMuxeR/libbluray"]
+#[ignore = "render BD-25 con menús HDMV anidados y audio; requiere ffmpeg/libbluray"]
 async fn renders_bd25_with_nested_hdmv_menus() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let project_path = root.join("fixtures/projects/bd25-nested-menu.json");
@@ -341,7 +340,7 @@ async fn renders_dvd_with_region_mask() {
 }
 
 #[tokio::test]
-#[ignore = "render AVCHD sin menús con UDF metadata; requiere ffmpeg/tsMuxeR"]
+#[ignore = "render AVCHD sin menús con UDF metadata; requiere ffmpeg"]
 async fn renders_menu_less_avchd_with_metadata_udf() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let project_path = root.join("fixtures/projects/avchd-dvd5.json");
@@ -525,7 +524,7 @@ async fn renders_dvd_motion_transition() {
 }
 
 #[tokio::test]
-#[ignore = "render de menú BD-25 con transición; requiere ffmpeg/tsMuxeR/libbluray"]
+#[ignore = "render de menú BD-25 con transición; requiere ffmpeg/libbluray"]
 async fn renders_bd25_motion_transition() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let project_path = root.join("fixtures/projects/bd25-menu.json");
@@ -654,7 +653,7 @@ async fn renders_dvd_multipage_template() {
 }
 
 #[tokio::test]
-#[ignore = "render BD-25 multipágina con plantilla; requiere ffmpeg/tsMuxeR/libbluray"]
+#[ignore = "render BD-25 multipágina con plantilla; requiere ffmpeg/libbluray"]
 async fn renders_bd25_multipage_template() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut project = kinodisc_project::load_project(root.join("fixtures/projects/bd25-menu.json"))

@@ -395,6 +395,129 @@ crop={width}:{height}"
     }
 }
 
+/// True for a frame at least 1280 wide or more than 576 high (1280x720 and
+/// up, and also 1280x534 or 1024x768): the sizes whose pictures are BT.709 when the file
+/// does not say (the rule players and FFmpeg-based tools follow).
+pub fn is_hd_frame(width: u32, height: u32) -> bool {
+    width >= 1280 || height > 576
+}
+
+/// True when FFprobe's `color_space` names a matrix.
+pub fn has_matrix_tag(tag: Option<&str>) -> bool {
+    tag.is_some_and(|tag| !matches!(tag.trim(), "" | "unknown" | "unspecified" | "reserved"))
+}
+
+/// Colour description of a disc picture: BT.601 on SD frames (the 525-line
+/// and 625-line flavours share one matrix), BT.709 on HD frames.
+///
+/// Until 1.3.4 the encoders named no source matrix. FFmpeg then reads an
+/// untagged picture as BT.601: a Blu-ray converted untagged HD video from
+/// BT.601 to BT.709, and a DVD kept the BT.709 values of an HD video (QA
+/// `cmp-143` and `pre-135`). Now every chain says what the source is
+/// (`source_filter`), asks for the disc's matrix and limited range
+/// (`output_args`: FFmpeg converts inside the chain, once) and tags the
+/// frames (`tag_filter`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiscColour {
+    /// 525-line SD (DVD NTSC, AVCHD 480i): SMPTE 170M.
+    Ntsc601,
+    /// 625-line SD (DVD PAL, AVCHD 576i): BT.470BG.
+    Pal601,
+    /// HD frames.
+    Hd709,
+}
+
+impl DiscColour {
+    /// The colour of an intermediate or menu picture of this size.
+    pub fn for_frame(width: u32, height: u32) -> Self {
+        if is_hd_frame(width, height) {
+            Self::Hd709
+        } else if height == 576 || height == 288 {
+            Self::Pal601
+        } else {
+            Self::Ntsc601
+        }
+    }
+
+    /// Name of the matrix and of the primaries (FFmpeg and x264 use the same).
+    pub fn matrix(self) -> &'static str {
+        match self {
+            Self::Ntsc601 => "smpte170m",
+            Self::Pal601 => "bt470bg",
+            Self::Hd709 => "bt709",
+        }
+    }
+
+    /// FFmpeg's `-color_trc` name of the transfer function.
+    pub fn transfer(self) -> &'static str {
+        match self {
+            Self::Ntsc601 => "smpte170m",
+            Self::Pal601 => "gamma28",
+            Self::Hd709 => "bt709",
+        }
+    }
+
+    /// Output options. FFmpeg converts the picture to this matrix and to
+    /// limited range where the source differs (measured equal to an explicit
+    /// `scale` conversion, QA `pre-135`).
+    pub fn output_args(self) -> Vec<String> {
+        [
+            "-color_primaries",
+            self.matrix(),
+            "-color_trc",
+            self.transfer(),
+            "-colorspace",
+            self.matrix(),
+            "-color_range",
+            "tv",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect()
+    }
+
+    /// Last filter of a chain. Encoders write primaries and transfer from
+    /// the frames, not from the output options (QA `pre-135`: MPEG-2 kept
+    /// the source's). Changes no pixel.
+    pub fn tag_filter(self) -> String {
+        // `setparams` calls gamma 2.8 `bt470bg`.
+        let transfer = match self {
+            Self::Pal601 => "bt470bg",
+            other => other.transfer(),
+        };
+        format!(
+            "setparams=color_primaries={}:color_trc={transfer}",
+            self.matrix()
+        )
+    }
+
+    /// First filter of a chain that reads a source video, or `None` when the
+    /// source names its matrix. `tag` is FFprobe's `color_space`; `hd` is
+    /// `is_hd_frame` of the source (false for a file known to be BT.601).
+    /// An untagged BT.601 source takes the disc's own BT.601 name, so that
+    /// nothing is converted.
+    pub fn source_filter(self, tag: Option<&str>, hd: bool) -> Option<String> {
+        if has_matrix_tag(tag) {
+            return None;
+        }
+        let matrix = match (hd, self) {
+            (true, _) => "bt709",
+            (false, Self::Pal601) => "bt470bg",
+            (false, _) => "smpte170m",
+        };
+        Some(format!("setparams=colorspace={matrix}"))
+    }
+}
+
+/// `filter` after `head` (a `source_filter`), either of them optional.
+pub fn chain_after(head: Option<String>, filter: Option<String>) -> Option<String> {
+    match (head, filter) {
+        (Some(head), Some(filter)) if !filter.trim().is_empty() => Some(format!("{head},{filter}")),
+        (Some(head), _) => Some(head),
+        (None, filter) => filter,
+    }
+}
+
 /// Adds `-threads N` before the output path (the last argument) of an FFmpeg
 /// encode, unless the arguments already set it.
 pub fn with_thread_limit(args: &[String], threads: Option<usize>) -> Vec<String> {
@@ -557,7 +680,7 @@ pub fn tool_supported_on(id: ToolId, platform: &str) -> bool {
     }
 }
 
-/// tsMuxeR is optional because AVCHD/BDMV has a native FFmpeg fallback;
+/// tsMuxeR is never required: Kinodisc muxes AVCHD/BDMV itself;
 /// xorriso because DVD-Video ISOs are written natively.
 pub const fn tool_required(id: ToolId) -> bool {
     !matches!(id, ToolId::TsMuxer | ToolId::Xorriso)
@@ -853,6 +976,8 @@ pub fn detect_toolchain() -> ToolchainReport {
         let probes: Vec<_> = SPECS
             .iter()
             .filter(|spec| tool_supported_on(spec.id, platform))
+            // Kinodisc does not use tsMuxeR (1.3.5): it is not looked for.
+            .filter(|spec| !matches!(spec.id, ToolId::TsMuxer))
             .map(|spec| {
                 let directories = &directories;
                 scope.spawn(move || detect_tool(spec, platform, directories))
@@ -1139,6 +1264,50 @@ pad=720:480:(ow-iw)/2:(oh-ih)/2"
         for filter in [&contain, &interlaced, &cover] {
             assert_eq!(filter.matches("scale=").count(), 1);
         }
+    }
+
+    #[test]
+    fn disc_colour_names_the_source_and_the_disc() {
+        // A tagged source says its matrix itself.
+        assert_eq!(DiscColour::Hd709.source_filter(Some("bt709"), true), None);
+        assert_eq!(
+            DiscColour::Ntsc601.source_filter(Some("bt470bg"), false),
+            None
+        );
+        // Untagged: BT.709 for HD sizes, the disc's BT.601 name for SD.
+        for tag in [None, Some("unknown"), Some("")] {
+            assert_eq!(
+                DiscColour::Ntsc601.source_filter(tag, true).as_deref(),
+                Some("setparams=colorspace=bt709")
+            );
+        }
+        assert_eq!(
+            DiscColour::Pal601.source_filter(None, false).as_deref(),
+            Some("setparams=colorspace=bt470bg")
+        );
+        assert_eq!(
+            DiscColour::Hd709.source_filter(None, false).as_deref(),
+            Some("setparams=colorspace=smpte170m")
+        );
+        assert!(is_hd_frame(1280, 534) && is_hd_frame(1920, 1080));
+        assert!(!is_hd_frame(1024, 576));
+        assert_eq!(DiscColour::for_frame(720, 576), DiscColour::Pal601);
+        assert_eq!(DiscColour::for_frame(720, 480), DiscColour::Ntsc601);
+        assert_eq!(DiscColour::for_frame(1920, 1080), DiscColour::Hd709);
+        assert_eq!(
+            DiscColour::Pal601.output_args().join(" "),
+            "-color_primaries bt470bg -color_trc gamma28 -colorspace bt470bg -color_range tv"
+        );
+        assert_eq!(
+            DiscColour::Pal601.tag_filter(),
+            "setparams=color_primaries=bt470bg:color_trc=bt470bg"
+        );
+        assert_eq!(
+            chain_after(Some("a".into()), Some("b".into())).as_deref(),
+            Some("a,b")
+        );
+        assert_eq!(chain_after(None, Some("b".into())).as_deref(), Some("b"));
+        assert_eq!(chain_after(Some("a".into()), None).as_deref(), Some("a"));
     }
 
     fn temp_dir(label: &str) -> PathBuf {

@@ -1,6 +1,6 @@
-//! Native Rust + FFmpeg BDMV authoring fallback.
+//! Native Rust + FFmpeg BDMV authoring: the muxer Kinodisc uses.
 //!
-//! This path is used when tsMuxeR is unavailable or the host is 32-bit. It
+//! It runs on every host, also when tsMuxeR is installed (1.3.5). It
 //! writes the movie M2TS directly with FFmpeg (copying H.264, AC-3 and PGS) and
 //! builds the BDMV navigation files with the pure builders in `kinodisc-hdmv`.
 //! Menus reuse the native IG packets but are muxed through the same FFmpeg path.
@@ -33,16 +33,18 @@ pub enum MuxBackend {
 }
 
 impl MuxBackend {
-    /// Pure selector used by tests and by `resolve`.
-    pub fn select(self, tsmuxer_available: bool, pointer_width: usize) -> Self {
+    /// `Auto` is the built-in muxer on every host, also when tsMuxeR is
+    /// installed (until 1.3.4 a 64-bit host with tsMuxeR used tsMuxeR).
+    /// tsMuxeR runs only when it is asked for by name.
+    pub fn select(self) -> Self {
         match self {
-            Self::Auto if pointer_width == 32 || !tsmuxer_available => Self::Native,
-            Self::Auto => Self::TsMuxer,
+            Self::Auto => Self::Native,
             other => other,
         }
     }
 
-    /// Resolves `Auto` using the environment and the host pointer width.
+    /// Resolves `Auto`. `KINODISC_MUXER=tsmuxer` asks for tsMuxeR by name:
+    /// a switch for tests, not a feature.
     pub fn resolve(self) -> Self {
         let requested = match kinodisc_toolchain::legacy::env_var("KINODISC_MUXER")
             .ok_or(())
@@ -51,10 +53,10 @@ impl MuxBackend {
             .as_str()
         {
             "native" => Self::Native,
-            "tsmuxer" | "tsmuxeR" => Self::TsMuxer,
+            "tsmuxer" => Self::TsMuxer,
             _ => self,
         };
-        requested.select(tsmuxer_is_available(), std::mem::size_of::<usize>() * 8)
+        requested.select()
     }
 }
 
@@ -617,11 +619,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn auto_prefers_native_on_32_bit_and_without_tsmuxer() {
-        assert_eq!(MuxBackend::Auto.select(true, 32), MuxBackend::Native);
-        assert_eq!(MuxBackend::Auto.select(false, 64), MuxBackend::Native);
-        assert_eq!(MuxBackend::Auto.select(true, 64), MuxBackend::TsMuxer);
-        assert_eq!(MuxBackend::Native.select(true, 64), MuxBackend::Native);
-        assert_eq!(MuxBackend::TsMuxer.select(false, 32), MuxBackend::TsMuxer);
+    fn auto_is_the_built_in_muxer_whatever_is_installed() {
+        assert_eq!(MuxBackend::Auto.select(), MuxBackend::Native);
+        assert_eq!(MuxBackend::Native.select(), MuxBackend::Native);
+        assert_eq!(MuxBackend::TsMuxer.select(), MuxBackend::TsMuxer);
     }
 }

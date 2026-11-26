@@ -56,17 +56,6 @@
       "binary": "dvd+rw-mediainfo",
       "minimumVersion": null,
       "source": "system"
-    },
-    {
-      "id": "tsMuxeR",
-      "binary": "tsMuxeR",
-      "minimumVersion": "2.6.16",
-      "source": "system",
-      "candidates": [
-        "/usr/local/bin/tsMuxeR",
-        "toolchains/tsMuxeR"
-      ],
-      "notes": "Puede devolver un exit code distinto de cero; se valida por el banner 'tsMuxeR version'."
     }
   ]
 }

@@ -92,7 +92,7 @@
           </button>
         </div>
         {#if devices.length === 0}
-          <p class="mt-1 rounded-md bg-amber-500/10 px-2.5 py-1.5 text-[12px] leading-5 text-amber-200/80">
+          <p class="mt-1 rounded-md bg-amber-500/10 px-2.5 py-1.5 text-[12px] leading-5 text-amber-200">
             {t("No se detectaron unidades ópticas. Conecta la grabadora y pulsa «Actualizar».")}
           </p>
         {:else}

@@ -57,7 +57,9 @@ pub struct VideoEncodeConfig {
     pub interlaced: bool,
     pub top_field_first: bool,
     pub scale_mode: VideoScaleMode,
-    /// Picture fixes (crop, rotate, colour…) run before the scale chain.
+    /// Runs before the scale chain: what the source's colour matrix is when
+    /// the file does not say (`DiscColour::source_filter`), then the picture
+    /// fixes (crop, rotate, colour…).
     pub pre_filter: Option<String>,
     /// The slow first pass of 1.3.0 and before.
     pub full_first_pass: bool,
@@ -140,6 +142,8 @@ pub struct MotionButtonEncode {
     pub width: u16,
     pub height: u16,
     pub shape_mask: ButtonShapeMask,
+    /// `DiscColour::source_filter` of the clip.
+    pub source_colour: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -147,6 +151,8 @@ pub struct MotionMenuTransition {
     pub input: PathBuf,
     pub duration_ms: u64,
     pub easing: kinodisc_domain::TransitionEasing,
+    /// `DiscColour::source_filter` of the clip.
+    pub source_colour: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +160,8 @@ pub struct MotionMenuEncodeRequest {
     /// Fondo compuesto sin botones (PNG) o vídeo de fondo de menú.
     pub background: PathBuf,
     pub background_is_video: bool,
+    /// `DiscColour::source_filter` of a video background.
+    pub background_colour: Option<String>,
     /// Textos, sombras, marcos e iconos con transparencia.
     pub labels_overlay: PathBuf,
     pub buttons: Vec<MotionButtonEncode>,
@@ -744,7 +752,24 @@ pub fn build_scale_filter(video: &VideoEncodeConfig) -> String {
         fit,
         video.interlaced,
     );
-    format!("{fps}{scale},setsar={sar},format=yuv420p")
+    let tag = disc_colour(video.standard).tag_filter();
+    format!("{fps}{scale},setsar={sar},format=yuv420p,{tag}")
+}
+
+/// Colour of a DVD picture: BT.601, in the flavour of its television system.
+pub fn disc_colour(standard: TvStandard) -> kinodisc_toolchain::DiscColour {
+    match standard {
+        TvStandard::Ntsc => kinodisc_toolchain::DiscColour::Ntsc601,
+        TvStandard::Pal => kinodisc_toolchain::DiscColour::Pal601,
+    }
+}
+
+/// `filter,` or nothing: a source colour filter in front of a chain.
+fn head(filter: &Option<String>) -> String {
+    filter
+        .as_ref()
+        .map(|filter| format!("{filter},"))
+        .unwrap_or_default()
 }
 
 /// Appends a local file input with an explicit protocol whitelist so crafted
@@ -1185,7 +1210,12 @@ pub fn build_motion_menu_args(request: &MotionMenuEncodeRequest) -> Vec<String> 
         ),
         MenuScaleMode::Stretch => format!("scale={width}:{height}"),
     };
-    let mut background_chain = format!("[0:v]{scale},setsar=1");
+    let background_head = if request.background_is_video {
+        head(&request.background_colour)
+    } else {
+        String::new()
+    };
+    let mut background_chain = format!("[0:v]{background_head}{scale},setsar=1");
     if request.blur_px > 0 {
         background_chain.push_str(&format!(",boxblur={}:1", request.blur_px.min(20)));
     }
@@ -1202,7 +1232,8 @@ pub fn build_motion_menu_args(request: &MotionMenuEncodeRequest) -> Vec<String> 
     if let Some(transition) = transition {
         let _easing = transition.easing;
         filters.push(format!(
-            "[{transition_index}:v]{scale},setsar=1,trim=duration={transition_secs:.3},setpts=PTS-STARTPTS,fps={fps},format=yuv420p,fade=t=in:st=0:d=0.35,fade=t=out:st={:.3}:d=0.35[tr]",
+            "[{transition_index}:v]{}{scale},setsar=1,trim=duration={transition_secs:.3},setpts=PTS-STARTPTS,fps={fps},format=yuv420p,fade=t=in:st=0:d=0.35,fade=t=out:st={:.3}:d=0.35[tr]",
+            head(&transition.source_colour),
             (transition_secs - 0.35).max(0.0)
         ));
         filters.push("[tr][bg]concat=n=2:v=1:a=0[sequence]".to_string());
@@ -1219,8 +1250,9 @@ pub fn build_motion_menu_args(request: &MotionMenuEncodeRequest) -> Vec<String> 
         let output = format!("btn{index}");
         filters.push(format!(
             // Scaled to the card before `loop` keeps the frames in memory.
-            "[{}:v]setpts=PTS-STARTPTS,fps={fps},scale={}:{}:force_original_aspect_ratio=increase,crop={}:{},setsar=1,format=rgba,trim=end_frame={loop_frames},loop=loop={repeats}:size={loop_frames},setpts=N/FRAME_RATE/TB[{raw}]",
+            "[{}:v]{}setpts=PTS-STARTPTS,fps={fps},scale={}:{}:force_original_aspect_ratio=increase,crop={}:{},setsar=1,format=rgba,trim=end_frame={loop_frames},loop=loop={repeats}:size={loop_frames},setpts=N/FRAME_RATE/TB[{raw}]",
             index + 1,
+            head(&button.source_colour),
             button.width,
             button.height,
             button.width,
@@ -1261,8 +1293,10 @@ pub fn build_motion_menu_args(request: &MotionMenuEncodeRequest) -> Vec<String> 
     // limit had to stop a graph that was still running.
     let total_frames =
         ((request.duration_ms as f64 * request.fps.as_f64() / 1000.0).ceil() as u64).max(1);
+    let colour = disc_colour(request.standard);
     filters.push(format!(
-        "[composed]trim=end_frame={total_frames},format=yuv420p[vout]"
+        "[composed]trim=end_frame={total_frames},format=yuv420p,{}[vout]",
+        colour.tag_filter()
     ));
     let audio_delay = if transition.is_some() {
         format!(
@@ -1305,6 +1339,9 @@ pub fn build_motion_menu_args(request: &MotionMenuEncodeRequest) -> Vec<String> 
             AspectRatio::SixteenNine => "16:9",
         }
         .to_string(),
+    ]);
+    args.extend(colour.output_args());
+    args.extend([
         "-c:a".to_string(),
         "ac3".to_string(),
         "-b:a".to_string(),
@@ -1417,6 +1454,8 @@ fn video_codec_args(video: &VideoEncodeConfig) -> Vec<String> {
         "-aspect".to_string(),
         aspect_label(video.aspect).to_string(),
     ];
+    // The disc's matrix and limited range: FFmpeg converts in the chain.
+    args.extend(disc_colour(video.standard).output_args());
     let mut flags = "+cgop".to_string();
     if video.interlaced {
         // Field order comes from `setfield` in the filter chain: the `-top`
@@ -1557,6 +1596,32 @@ mod tests {
             fps: FrameRate::NTSC,
             passlog: PathBuf::from("/tmp/out/episode-01.passlog"),
         }
+    }
+
+    #[test]
+    fn dvd_encodes_ask_for_bt601_and_tag_the_frames() {
+        let ntsc = video(DvdProfile::D1, TvStandard::Ntsc, AspectRatio::SixteenNine);
+        let args = video_codec_args(&ntsc).join(" ");
+        assert!(
+            args.contains("-color_primaries smpte170m -color_trc smpte170m -colorspace smpte170m -color_range tv"),
+            "{args}"
+        );
+        assert!(build_scale_filter(&ntsc)
+            .ends_with("format=yuv420p,setparams=color_primaries=smpte170m:color_trc=smpte170m"));
+        let pal = video(DvdProfile::D1, TvStandard::Pal, AspectRatio::SixteenNine);
+        let args = first_pass_codec_args(&pal).join(" ");
+        assert!(
+            args.contains(
+                "-color_primaries bt470bg -color_trc gamma28 -colorspace bt470bg -color_range tv"
+            ),
+            "{args}"
+        );
+        assert!(build_scale_filter(&pal)
+            .ends_with("setparams=color_primaries=bt470bg:color_trc=bt470bg"));
+        // The source's own matrix, when the file does not name it, comes first.
+        let mut untagged = ntsc.clone();
+        untagged.pre_filter = Some("setparams=colorspace=bt709".to_string());
+        assert!(encode_filter(&untagged).starts_with("setparams=colorspace=bt709,fps="));
     }
 
     #[test]
@@ -1860,6 +1925,7 @@ mod tests {
             width: 160,
             height: 90,
             shape_mask: shape,
+            source_colour: None,
         }
     }
 
@@ -1867,6 +1933,7 @@ mod tests {
         MotionMenuEncodeRequest {
             background: PathBuf::from("/tmp/menu-background.png"),
             background_is_video: false,
+            background_colour: None,
             labels_overlay: PathBuf::from("/tmp/labels.png"),
             buttons: (0..button_count)
                 .map(|index| motion_button(index, shape))
@@ -1926,7 +1993,7 @@ mod tests {
             let frames = (15.0 * request.fps.as_f64()).ceil() as u64;
             assert!(
                 filter.contains(&format!(
-                    "[composed]trim=end_frame={frames},format=yuv420p[vout]"
+                    "[composed]trim=end_frame={frames},format=yuv420p,setparams=color_primaries=smpte170m:color_trc=smpte170m[vout]"
                 )),
                 "{filter}"
             );

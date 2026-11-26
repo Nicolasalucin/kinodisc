@@ -163,7 +163,7 @@ Each release includes `SHA256SUMS.txt` to check the downloads.
 
 - **Windows:** nothing to install. On first start Kinodisc offers to download
   FFmpeg and DVDAuthor (about 120 MB), checks their SHA-256 and keeps them in
-  your user folder. Optional: tsMuxeR.
+  your user folder.
 - **Linux:**
   ```bash
   # Debian / Ubuntu
@@ -244,7 +244,7 @@ Thanks to these community members for finding bugs and suggesting improvements:
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](LICENSE). FFmpeg, DVDAuthor and tsMuxeR are
+GPL-3.0-or-later. See [LICENSE](LICENSE). FFmpeg and DVDAuthor are
 separate programs under their own licences.
 
 ## Disclaimer

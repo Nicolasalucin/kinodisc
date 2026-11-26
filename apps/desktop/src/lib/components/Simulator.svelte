@@ -782,11 +782,11 @@
   {#if playbackSupport && !playbackSupport.supported}
     <div class="mx-3 mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[12px] text-amber-100">
       <p class="font-semibold">{t("Reproducción de vídeo no disponible")}</p>
-      <p class="mt-0.5 text-[12px] leading-5 text-amber-100/80">{playbackSupport.detail}</p>
+      <p class="mt-0.5 text-[12px] leading-5 text-amber-100">{playbackSupport.detail}</p>
       {#if playbackSupport.installHint}
         <code class="mt-1 block break-words text-[12px] leading-5 text-cyan-200">{playbackSupport.installHint}</code>
       {/if}
-      <p class="mt-1 text-[11px] text-amber-100/60">
+      <p class="mt-1 text-[11px] text-amber-100">
         {t("Los menús, el foco y la navegación siguen funcionando.")}
       </p>
     </div>
@@ -972,7 +972,7 @@
             <p class="text-[11px] font-semibold text-amber-200">{t("Avisos de navegación")}</p>
             <ul class="mt-1 space-y-1">
               {#each warnings as warning}
-                <li class="text-[12px] leading-5 text-amber-100/70">{localizeDiagnostic(warning)}</li>
+                <li class="text-[12px] leading-5 text-amber-100">{localizeDiagnostic(warning)}</li>
               {/each}
             </ul>
           </div>

@@ -605,6 +605,9 @@ pub struct VideoStreamInfo {
     pub pix_fmt: Option<String>,
     #[serde(default)]
     pub field_order: Option<String>,
+    /// Colour matrix as reported by FFprobe (`bt709`, `smpte170m`…); `unknown` when the file does not say; absent in probes saved before 1.3.5.
+    #[serde(default)]
+    pub color_space: Option<String>,
     #[serde(default)]
     pub bit_depth: Option<u8>,
     /// Codec profile as reported by FFprobe (`High`, `Main`…).

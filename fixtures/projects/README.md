@@ -33,7 +33,7 @@ Blu-ray:
 
 - dos episodios de 20 s y 15 s con audio AC-3;
 - reproducción continua con capítulos en los límites e interior de episodios;
-- H.264 High@4.1, VBV 24 Mbps y salida UDF 2.50 vía tsMuxeR;
+- H.264 High@4.1, VBV 24 Mbps y salida UDF 2.50 con el muxer propio;
 - sin menús interactivos (el fixture declara `menus: []`).
 
 ```bash

@@ -37,7 +37,14 @@ pub struct JoinClip {
     pub path: PathBuf,
     pub duration_s: f64,
     pub has_audio: bool,
+    /// `DiscColour::source_filter` of the clip.
+    pub colour: Option<String>,
 }
+
+/// The joined frame is 1080 lines: BT.709. Until 1.3.4 the file took the
+/// tags of its first clip, and an untagged clip after a tagged one was
+/// converted from BT.601 (QA `pre-135`).
+const JOIN_COLOUR: kinodisc_toolchain::DiscColour = kinodisc_toolchain::DiscColour::Hd709;
 
 pub fn validate(request: &JoinRequest) -> Result<Vec<PathBuf>, String> {
     if request.clips.len() < 2 {
@@ -115,8 +122,13 @@ pub fn join_args(clips: &[JoinClip], widescreen: bool, fps: f64, output: &Path) 
     let mut pairs = String::new();
     for (index, clip) in clips.iter().enumerate() {
         graph.push(format!(
-            "[{index}:v]bwdif=mode=send_frame:deint=interlaced,scale={width}:{height}:force_original_aspect_ratio=decrease:out_range=tv,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={},format=yuv420p,trim=duration={},setpts=PTS-STARTPTS[v{index}]",
+            "[{index}:v]{}bwdif=mode=send_frame:deint=interlaced,scale={width}:{height}:force_original_aspect_ratio=decrease:out_range=tv,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={},format=yuv420p,{},trim=duration={},setpts=PTS-STARTPTS[v{index}]",
+            clip.colour
+                .as_ref()
+                .map(|filter| format!("{filter},"))
+                .unwrap_or_default(),
             fmt(fps),
+            JOIN_COLOUR.tag_filter(),
             fmt(clip.duration_s)
         ));
         let audio_input = if clip.has_audio {
@@ -153,8 +165,6 @@ pub fn join_args(clips: &[JoinClip], widescreen: bool, fps: f64, output: &Path) 
             "14",
             "-pix_fmt",
             "yuv420p",
-            "-color_range",
-            "tv",
             "-c:a",
             "aac",
             "-b:a",
@@ -165,6 +175,7 @@ pub fn join_args(clips: &[JoinClip], widescreen: bool, fps: f64, output: &Path) 
         .iter()
         .map(|value| value.to_string()),
     );
+    args.extend(JOIN_COLOUR.output_args());
     args.push(output.display().to_string());
     args
 }
@@ -184,7 +195,7 @@ pub fn clip_starts_ms(clips: &[JoinClip]) -> Vec<f64> {
 
 fn cache_key(request: &JoinRequest, clips: &[PathBuf]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"kinodisc-join-v2");
+    hasher.update(b"kinodisc-join-v3");
     hasher.update(format!("{}|{}", request.widescreen, request.fps).as_bytes());
     for path in clips {
         hasher.update(path.display().to_string().as_bytes());
@@ -220,6 +231,7 @@ pub async fn build_join(request: &JoinRequest, cache_dir: &Path) -> Result<JoinO
             path: path.clone(),
             duration_s: duration_ms as f64 / 1000.0,
             has_audio: !probe.audio.is_empty(),
+            colour: crate::source_colour(&probe, path, JOIN_COLOUR),
         });
     }
     let starts = clip_starts_ms(&clips);
@@ -285,6 +297,7 @@ mod tests {
             path: PathBuf::from(name),
             duration_s: seconds,
             has_audio: audio,
+            colour: None,
         }
     }
 

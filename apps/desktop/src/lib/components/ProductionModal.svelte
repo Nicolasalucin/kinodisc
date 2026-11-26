@@ -11,7 +11,7 @@
   import { Channel } from "@tauri-apps/api/core";
   import { videoDir } from "@tauri-apps/api/path";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import {
     commands,
     type BurnProgress_Deserialize,
@@ -343,6 +343,47 @@
     }
   });
   const stalled = $derived(busy && now - lastChange > 4000);
+
+  // On a short window the progress card starts below the fold: bring it
+  // into view when a production starts and again when its result arrives
+  // (QA 1.3.4: at 1280x629 the result needed a scroll).
+  let progressCard = $state<HTMLDivElement>();
+  // An error is shown at the top of the window, above the settings.
+  let errorBox = $state<HTMLDivElement>();
+  // A modal dialog keeps Tab inside, like the disc tools window (QA rel-147:
+  // Tab went on to the editor behind). A dialog opened on top has its own.
+  let dialogBox = $state<HTMLDivElement>();
+  $effect(() => {
+    const box = dialogBox;
+    if (!box) return;
+    const keepTabInside = (event: KeyboardEvent) => {
+      if (event.key !== "Tab" || ui.anyDialog) return;
+      const items = [
+        ...box.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, summary, [tabindex]:not([tabindex="-1"])',
+        ),
+      ].filter((item) => !item.hasAttribute("disabled") && item.getClientRects().length > 0);
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const inside = box.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === first || !inside)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !inside)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", keepTabInside, true);
+    return () => document.removeEventListener("keydown", keepTabInside, true);
+  });
+  $effect(() => {
+    const failed = Boolean(localError || projectStore.renderError || projectStore.burnError);
+    const target = failed && !busy ? errorBox : progressCard;
+    if (!(busy || failed || projectStore.lastIso) || !target) return;
+    void tick().then(() => target.scrollIntoView({ block: "nearest" }));
+  });
   const elapsedLabel = $derived.by(() => {
     // Read the clock first: returning before it would drop the dependency
     // and the label would never update (QA 1.1.3).
@@ -394,6 +435,13 @@
       projectStore.lastIso = null;
     }
     void prepareDefaults();
+  });
+
+  // Closing gives the focus back to the control that opened the window
+  // (QA fix-135e: it was left on the page).
+  const opener = document.activeElement;
+  onMount(() => () => {
+    if (opener instanceof HTMLElement && opener !== document.body && opener.isConnected) opener.focus();
   });
 
   async function prepareDefaults() {
@@ -593,6 +641,15 @@
         projectStore.renderUsages = [...projectStore.renderUsages, { ...outcome.usage, folderBytes }];
         outputs.push(produced);
         producedList = [...outputs];
+        // The engine's lines name the image inside its work folder, which is
+        // gone by now: the log names what was kept. A disc folder is not an
+        // image: its "ISO generado" line goes and the "✓" line names the folder.
+        const workPath: string | null = projectStore.lastIso;
+        if (workPath && workPath !== produced) {
+          projectStore.renderLogs = projectStore.renderLogs
+            .filter((line) => mode !== "folder" || line.startsWith("✓ ") || !line.includes(workPath))
+            .map((line) => line.split(workPath).join(produced));
+        }
         projectStore.lastIso = produced;
         // The engine's own summary names its (already removed) work folder.
         projectStore.renderSummary = t("Listo: {path}", { path: produced });
@@ -766,7 +823,7 @@
     class="ui-backdrop"
   ></button>
 
-  <div class="ui-dialog max-h-[92vh] w-full max-w-4xl" role="dialog" aria-modal="true" aria-labelledby="production-title">
+  <div bind:this={dialogBox} class="ui-dialog max-h-[92vh] w-full max-w-4xl" role="dialog" aria-modal="true" aria-labelledby="production-title">
     <header class="ui-dialog-header">
       <div>
         <h2 id="production-title" class="text-[16px] font-semibold text-slate-50">{t("Generar y grabar disco")}</h2>
@@ -776,7 +833,7 @@
           {t((project?.episodes.length ?? 0) === 1 ? "episodio" : "episodios")}
         </p>
         {#if hardwareEncoder}
-          <p class="mt-1 text-[11px] text-emerald-300/80">
+          <p class="mt-1 text-[11px] text-emerald-300">
             {t("Aceleración: {encoder} (fallback automático a CPU)", { encoder: hardwareEncoder })}
           </p>
         {:else if isAvchd && projectStore.toolsReport}
@@ -796,7 +853,7 @@
 
     <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
       {#if projectStore.burnError && !localError && !projectStore.renderError}
-        <div class="mb-4">
+        <div class="mb-4" bind:this={errorBox}>
           <BurnErrorBox
             message={projectStore.burnError}
             action={t("Grabar")}
@@ -807,7 +864,7 @@
           />
         </div>
       {:else if localError || projectStore.renderError || projectStore.burnError}
-        <div class="mb-4 rounded-md bg-rose-500/10 px-3 py-2 text-[12px] leading-5 text-rose-200" role="alert">
+        <div class="mb-4 rounded-md bg-rose-500/10 px-3 py-2 text-[12px] leading-5 text-rose-200" role="alert" bind:this={errorBox}>
           {localError ?? projectStore.renderError ?? projectStore.burnError}
           {#if projectStore.renderError}
             <p class="mt-1 text-[11px] text-rose-100/90">
@@ -1008,7 +1065,7 @@
             </div>
           {/if}
 
-          <div class="rounded-md border border-slate-700 p-3">
+          <div class="rounded-md border border-slate-700 p-3" bind:this={progressCard}>
             <div class="flex items-center justify-between">
               <span class="ui-section-title">
                 {t("Progreso")}
@@ -1075,13 +1132,17 @@
                 <summary class="cursor-pointer select-none text-[11px] text-slate-400">
                   {t("Verificación estructural")} · {verdictLabel(projectStore.renderVerification.verdict)}
                 </summary>
-                <ul class="mt-1 max-h-32 space-y-0.5 overflow-y-auto font-mono text-[11px]">
+                <!-- The list scrolls: keyboard users reach it with Tab (axe scrollable-region-focusable). -->
+                <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+                <div class="mt-1 max-h-32 overflow-y-auto" role="region" aria-label={t("Verificación estructural")} tabindex="0">
+                <ul class="space-y-0.5 font-mono text-[11px]">
                   {#each checkRows as row (row.key)}
                     <li class:text-rose-300={row.check.status === "fail"} class:text-amber-300={row.check.status === "warn"} class:text-emerald-300={row.check.status === "pass"} class:text-slate-500={row.check.status === "skipped"}>
                       <span title={row.details}>{localizeCheck(row.check)}{row.count > 1 ? ` ×${row.count}` : ""}</span>
                     </li>
                   {/each}
                 </ul>
+                </div>
               </details>
             {/if}
             {#if projectStore.lastIso}
@@ -1112,7 +1173,14 @@
               <summary class="ui-section-title cursor-pointer select-none">
                 {t("Registro")} · {projectStore.renderLogs.length} {t("líneas")}
               </summary>
-              <div class="mt-2 max-h-44 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-2 font-mono text-[12px] leading-5 text-slate-500">
+              <!-- A scrolling region must take the keyboard focus (axe: scrollable-region-focusable). -->
+              <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+              <div
+                class="mt-2 max-h-44 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-2 font-mono text-[12px] leading-5 text-slate-500"
+                role="region"
+                aria-label={t("Registro")}
+                tabindex="0"
+              >
                 {#each projectStore.renderLogs as line}
                   <p class="whitespace-pre-wrap">{line}</p>
                 {/each}
@@ -1136,7 +1204,7 @@
                 </button>
               </div>
               {#if devices.length === 0}
-                <p class="mt-2 rounded-md bg-amber-500/10 px-2.5 py-1.5 text-[12px] leading-5 text-amber-200/80">
+                <p class="mt-2 rounded-md bg-amber-500/10 px-2.5 py-1.5 text-[12px] leading-5 text-amber-200">
                   {t("No se detectaron unidades ópticas. Puedes generar el ISO y grabarlo después.")}
                 </p>
               {:else}

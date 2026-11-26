@@ -203,7 +203,7 @@
                 <div class="relative h-6 overflow-hidden rounded-md border border-slate-800 bg-slate-950">
                   <div class="absolute inset-y-0 left-0 w-full bg-amber-500/10"></div>
                   <div class="absolute inset-y-0 rounded-sm bg-amber-400/30" style={shiftedBar(track.delayMs)}></div>
-                  <span class="absolute left-2 top-1/2 -translate-y-1/2 text-[11px] text-amber-100/80">
+                  <span class="absolute left-2 top-1/2 -translate-y-1/2 text-[11px] text-amber-100">
                     {track.language.toUpperCase()} · {track.format === "ac3Surround51" ? "5.1" : "2.0"} · {track.ac3Kbps} kbps
                   </span>
                   {#if track.delayMs !== 0}
@@ -223,7 +223,7 @@
                 <div class="relative h-6 overflow-hidden rounded-md border border-slate-800 bg-slate-950">
                   <div class="absolute inset-y-0 left-0 w-full bg-violet-500/10"></div>
                   <div class="absolute inset-y-0 rounded-sm bg-violet-400/25" style={shiftedBar(track.delayMs)}></div>
-                  <span class="absolute left-2 top-1/2 -translate-y-1/2 text-[11px] text-violet-100/80">
+                  <span class="absolute left-2 top-1/2 -translate-y-1/2 text-[11px] text-violet-100">
                     {track.language.toUpperCase()} · {track.sourcePath ? basename(track.sourcePath) : `stream ${track.sourceStream}`}
                   </span>
                 </div>
@@ -317,6 +317,7 @@
                   </div>
                   <select
                     class="ui-input ui-input-sm"
+                    aria-label={t("Formato")}
                     value={track.format}
                     onchange={(event) => setFormat(index, event.currentTarget.value as AudioFormat)}
                   >
@@ -326,6 +327,7 @@
                   <select
                     class={["ui-input ui-input-sm", !ac3TrackValid(track) && "border-rose-500 text-rose-200"]}
                     value={track.ac3Kbps}
+                    aria-label={t("Tasa de bits AC-3")}
                     aria-invalid={!ac3TrackValid(track)}
                     title={ac3TrackValid(track) ? undefined : t("Esta tasa no se admite: elige otra de la lista (en 5.1, 192 kbps o más).")}
                     onchange={(event) => setAudioBitrate(index, Number(event.currentTarget.value))}

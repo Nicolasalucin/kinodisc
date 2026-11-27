@@ -2,8 +2,7 @@
 //!
 //! The detector intentionally treats usage banners as valid evidence for tools
 //! such as `dvdauthor`, `spumux`, `growisofs` and `dvd+rw-mediainfo`, which do
-//! not implement a conventional `--version` flag. tsMuxeR is also accepted when
-//! it returns a non-zero exit code but prints its version banner.
+//! not implement a conventional `--version` flag.
 
 pub mod legacy;
 pub mod provision;
@@ -48,11 +47,10 @@ pub enum ToolId {
     Xorriso,
     Growisofs,
     DvdRwMediaInfo,
-    TsMuxer,
 }
 
 impl ToolId {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 7] = [
         Self::Ffmpeg,
         Self::Ffprobe,
         Self::Dvdauthor,
@@ -60,7 +58,6 @@ impl ToolId {
         Self::Xorriso,
         Self::Growisofs,
         Self::DvdRwMediaInfo,
-        Self::TsMuxer,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -72,7 +69,6 @@ impl ToolId {
             Self::Xorriso => "xorriso",
             Self::Growisofs => "growisofs",
             Self::DvdRwMediaInfo => "dvd+rw-mediainfo",
-            Self::TsMuxer => "tsMuxeR",
         }
     }
 }
@@ -147,15 +143,21 @@ pub enum EncoderPreference {
     /// The first working hardware encoder, otherwise x264 `medium`.
     #[default]
     Auto,
-    /// x264 `fast`: quicker, a little less quality at the same size.
+    /// x264 `fast`. Measured on two film excerpts (cmp-150): `medium` needs
+    /// 2 to 4 % fewer bits for the same quality in about the same time.
     CpuFast,
     /// x264 `medium` (the historical "CPU only" choice).
     CpuOnly,
-    /// x264 `slow`: about twice the time of `medium`, best quality per byte.
+    /// x264 `slow`: about 1.4 times the time of `medium` (cmp-150, one
+    /// encode per clip).
     CpuSlow,
-    /// x264 `slower`: about a third more time than `slow` for a little more
-    /// quality (bluray-compat caps its extra refs and B-frames).
+    /// x264 `slower`: 6 to 10 % fewer bits than `fast` for the same quality,
+    /// about 1.7 times the time (bluray-compat caps its extra refs and
+    /// B-frames).
     CpuSlower,
+    /// x264 `veryslow`: 8 to 12 % fewer bits than `fast`, 2.2 to 2.7 times
+    /// the time. The stream stays inside the disc's limits (cmp-150).
+    CpuSlowest,
     Prefer(HardwareEncoder),
 }
 
@@ -167,6 +169,7 @@ impl EncoderPreference {
             Self::CpuFast => "fast",
             Self::CpuSlow => "slow",
             Self::CpuSlower => "slower",
+            Self::CpuSlowest => "veryslow",
             Self::Auto | Self::CpuOnly | Self::Prefer(_) => "medium",
         }
     }
@@ -658,15 +661,6 @@ const SPECS: &[ToolSpec] = &[
         markers: &["usage:", "dvd+rw-mediainfo"],
         required: true,
     },
-    ToolSpec {
-        id: ToolId::TsMuxer,
-        name: "tsMuxeR",
-        binary_names: &["tsMuxeR", "tsmuxer"],
-        version_args: &["--version"],
-        accept_any_exit: true,
-        markers: &["tsMuxeR version"],
-        required: false,
-    },
 ];
 
 /// Linux-only helpers are not required on macOS/Windows because those systems
@@ -680,10 +674,9 @@ pub fn tool_supported_on(id: ToolId, platform: &str) -> bool {
     }
 }
 
-/// tsMuxeR is never required: Kinodisc muxes AVCHD/BDMV itself;
-/// xorriso because DVD-Video ISOs are written natively.
+/// xorriso is never required: DVD-Video ISOs are written natively.
 pub const fn tool_required(id: ToolId) -> bool {
-    !matches!(id, ToolId::TsMuxer | ToolId::Xorriso)
+    !matches!(id, ToolId::Xorriso)
 }
 
 /// Adds the platform executable suffix and keeps the bare name as a fallback.
@@ -976,8 +969,6 @@ pub fn detect_toolchain() -> ToolchainReport {
         let probes: Vec<_> = SPECS
             .iter()
             .filter(|spec| tool_supported_on(spec.id, platform))
-            // Kinodisc does not use tsMuxeR (1.3.5): it is not looked for.
-            .filter(|spec| !matches!(spec.id, ToolId::TsMuxer))
             .map(|spec| {
                 let directories = &directories;
                 scope.spawn(move || detect_tool(spec, platform, directories))
@@ -1081,7 +1072,8 @@ pub fn resolve_hardware_encoder(
         EncoderPreference::CpuFast
         | EncoderPreference::CpuOnly
         | EncoderPreference::CpuSlow
-        | EncoderPreference::CpuSlower => None,
+        | EncoderPreference::CpuSlower
+        | EncoderPreference::CpuSlowest => None,
         EncoderPreference::Auto => capabilities.h264.first().copied(),
         EncoderPreference::Prefer(encoder) => {
             capabilities.h264.contains(&encoder).then_some(encoder)
@@ -1205,7 +1197,6 @@ fn extract_version(id: ToolId, output: &str) -> Option<String> {
             .or_else(|| extract_after(output, "xorriso version ")),
         ToolId::Growisofs => extract_after(output, "version "),
         ToolId::DvdRwMediaInfo => None,
-        ToolId::TsMuxer => extract_after(output, "tsMuxeR version "),
     }
     .map(|version| {
         version
@@ -1345,8 +1336,8 @@ pad=720:480:(ow-iw)/2:(oh-ih)/2"
             vec!["ffmpeg".to_string()]
         );
         assert_eq!(
-            platform_binary_candidates("tsMuxeR", "macos"),
-            vec!["tsMuxeR".to_string()]
+            platform_binary_candidates("dvdauthor", "macos"),
+            vec!["dvdauthor".to_string()]
         );
     }
 
@@ -1505,10 +1496,10 @@ pad=720:480:(ow-iw)/2:(oh-ih)/2"
         assert!(!tool_supported_on(ToolId::DvdRwMediaInfo, "windows"));
         assert!(tool_supported_on(ToolId::Growisofs, "freebsd"));
         assert!(tool_supported_on(ToolId::DvdRwMediaInfo, "freebsd"));
-        assert!(tool_supported_on(ToolId::TsMuxer, "windows"));
+        assert!(tool_supported_on(ToolId::Xorriso, "windows"));
         assert!(tool_supported_on(ToolId::Ffmpeg, "macos"));
         assert!(tool_supported_on(ToolId::Ffmpeg, "freebsd"));
-        assert!(!tool_required(ToolId::TsMuxer));
+        assert!(!tool_required(ToolId::Xorriso));
         assert!(tool_required(ToolId::Ffmpeg));
     }
 
@@ -1536,15 +1527,6 @@ pad=720:480:(ow-iw)/2:(oh-ih)/2"
         assert_eq!(
             extract_version(ToolId::Xorriso, output).as_deref(),
             Some("1.5.8.pl02")
-        );
-    }
-
-    #[test]
-    fn extracts_tsmuxer_banner() {
-        let output = "tsMuxeR version 2.7.0. github.com/justdan96/tsMuxer\n";
-        assert_eq!(
-            extract_version(ToolId::TsMuxer, output).as_deref(),
-            Some("2.7.0")
         );
     }
 
@@ -1583,6 +1565,8 @@ pad=720:480:(ow-iw)/2:(oh-ih)/2"
             EncoderPreference::CpuFast,
             EncoderPreference::CpuOnly,
             EncoderPreference::CpuSlow,
+            EncoderPreference::CpuSlower,
+            EncoderPreference::CpuSlowest,
         ] {
             assert_eq!(resolve_hardware_encoder(cpu, &capabilities), None);
         }
@@ -1590,6 +1574,8 @@ pad=720:480:(ow-iw)/2:(oh-ih)/2"
         assert_eq!(EncoderPreference::CpuOnly.x264_preset(), "medium");
         assert_eq!(EncoderPreference::Auto.x264_preset(), "medium");
         assert_eq!(EncoderPreference::CpuSlow.x264_preset(), "slow");
+        assert_eq!(EncoderPreference::CpuSlower.x264_preset(), "slower");
+        assert_eq!(EncoderPreference::CpuSlowest.x264_preset(), "veryslow");
         assert_eq!(
             resolve_hardware_encoder(EncoderPreference::Auto, &capabilities),
             Some(HardwareEncoder::NvencH264)

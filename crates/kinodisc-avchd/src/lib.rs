@@ -1,7 +1,6 @@
-//! AVCHD/BDMV engine: H.264 encoding, AC-3 audio, elementary-stream
-//! concatenation, tsMuxeR metafile generation and ISO/folder muxing. Blu-ray
-//! capacities switch the metafile to native `--blu-ray` mode and can carry an
-//! HDMV Interactive Graphics stream compiled by `kinodisc-hdmv`.
+//! AVCHD/BDMV engine: H.264 encoding, AC-3 audio, concatenation of the
+//! episodes and the built-in BDMV muxer (`native`). Menus are HDMV
+//! Interactive Graphics streams compiled by `kinodisc-hdmv`.
 
 use kinodisc_domain::{
     AspectRatio, AvchdResolution, AvchdVideoConfig, Diagnostic, DiscCapacity, FrameRange,
@@ -32,7 +31,6 @@ pub const AVCHD_UDF_REVISION: &str = "2.50";
 pub const AVCHD_VIDEO_CODEC: &str = "h264";
 pub const AVCHD_AUDIO_CODEC: &str = "ac3";
 pub const AVCHD_X264_LEVEL: &str = "4.1";
-pub const AVCHD_MUX_TIMEOUT: Duration = Duration::from_secs(3_600);
 /// A single FFmpeg stage may legitimately run for hours on slow hardware, but
 /// an unresponsive process must not block a render forever.
 pub const AVCHD_STAGE_TIMEOUT: Duration = Duration::from_secs(12 * 60 * 60);
@@ -130,16 +128,6 @@ pub enum AvchdAudioCodec {
     Lpcm,
 }
 
-impl AvchdAudioCodec {
-    pub const fn meta_name(self) -> &'static str {
-        match self {
-            Self::Ac3 => "A_AC3",
-            Self::Dts => "A_DTS",
-            Self::Lpcm => "A_LPCM",
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct AvchdAudioConfig {
     pub source_stream: u32,
@@ -153,7 +141,7 @@ pub struct AvchdAudioConfig {
     pub language: String,
     /// Stream-copy an already compatible DTS/LPCM/AC-3 stream.
     pub copy: bool,
-    /// Codec declared in the tsMuxeR meta for copy or AC-3 encode.
+    /// Codec the track has on the disc (stream copy or AC-3 encode).
     pub codec: AvchdAudioCodec,
     pub default: bool,
     pub commentary: bool,
@@ -369,9 +357,7 @@ pub enum AvchdError {
         code: i32,
         stderr: String,
     },
-    #[error("tsMuxeR falló con código {code}: {stderr}")]
-    TsMuxer { code: i32, stderr: String },
-    #[error("tsMuxeR no generó la salida esperada: {0}")]
+    #[error("no se generó la salida esperada: {0}")]
     MissingOutput(String),
     #[error("la operación AVCHD excedió el tiempo máximo")]
     Timeout,
@@ -1011,7 +997,7 @@ fn tail(value: &str, max_chars: usize) -> String {
 }
 
 /// Concatenates intermediate Matroska files with a stream copy. The combined
-/// file keeps continuous timestamps for tsMuxeR.
+/// file keeps continuous timestamps for the muxer.
 pub async fn concat_mkv(
     ffmpeg: &Path,
     inputs: &[PathBuf],
@@ -1030,7 +1016,7 @@ pub async fn concat_mkv(
         if inputs[0].as_path() == output {
             return Ok(());
         }
-        // tsMuxeR only reads the stream: hard-link it instead of copying many
+        // The muxer only reads the stream: hard-link it instead of copying many
         // GB; fall back to a copy across volumes.
         if output.exists() {
             std::fs::remove_file(output)?;
@@ -1079,257 +1065,11 @@ pub async fn concat_mkv(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct AvchdMetaSubtitle<'a> {
-    /// Path tsMuxeR can open; `combined.mkv` for embedded PGS tracks.
-    pub source: &'a str,
-    pub track: u32,
-    pub language: &'a str,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct AvchdMetaAudio<'a> {
-    pub source: &'a str,
-    pub track: u32,
-    pub language: &'a str,
-    pub codec: AvchdAudioCodec,
-}
-
-#[derive(Debug, Clone)]
-pub struct AvchdMetaRequest<'a> {
-    pub video: &'a str,
-    pub audios: &'a [AvchdMetaAudio<'a>],
-    pub video_track: u32,
-    pub fps: FrameRate,
-    /// Chapter start timestamps in milliseconds, relative to the final track.
-    pub chapters: &'a [u64],
-    pub capacity: DiscCapacity,
-    pub maxrate_kbps: u32,
-    pub vbv_bufsize_kbps: u32,
-    /// Flujo HDMV IG compilado (PES). tsMuxeR lo recibe como pista de
-    /// gráficos; si el muxer no lo soporta, el render reintenta sin él.
-    pub interactive_graphics: Option<&'a str>,
-    /// PGS tracks carried by `video`/external `.sup` inputs.
-    pub subtitles: &'a [AvchdMetaSubtitle<'a>],
-}
-
-pub fn build_meta(request: &AvchdMetaRequest<'_>) -> String {
-    let mut chapters: Vec<u64> = request.chapters.to_vec();
-    chapters.sort_unstable();
-    chapters.dedup();
-    if chapters.first().copied().unwrap_or(1) != 0 {
-        chapters.insert(0, 0);
-    }
-    let chapter_list = chapters
-        .iter()
-        .map(|millis| format_chapter(*millis))
-        .collect::<Vec<_>>()
-        .join(";");
-    let header = if request.capacity.is_blu_ray() {
-        "MUXOPT --blu-ray"
-    } else {
-        "MUXOPT --avchd"
-    };
-    let mut meta = format!(
-        "{header} --vbv-bufsize={} --vbv-maxrate={} --custom-chapters={}\n",
-        request.vbv_bufsize_kbps, request.maxrate_kbps, chapter_list
-    );
-    meta.push_str(&format!(
-        "V_MPEG4/ISO/AVC, {}, track={}, fps={:.3}, insertSEI, contSPS\n",
-        request.video,
-        request.video_track,
-        request.fps.as_f64()
-    ));
-    for audio in request.audios {
-        meta.push_str(&format!(
-            "{}, {}, track={}, lang={}\n",
-            audio.codec.meta_name(),
-            audio.source,
-            audio.track,
-            normalize_language(audio.language)
-        ));
-    }
-    if let Some(graphics) = request.interactive_graphics {
-        meta.push_str(&format!("S_HDMV/PGS, {graphics}, track=1, lang=und\n"));
-    }
-    for subtitle in request.subtitles {
-        meta.push_str(&format!(
-            "S_HDMV/PGS, {}, track={}, lang={}\n",
-            subtitle.source,
-            subtitle.track,
-            normalize_language(subtitle.language)
-        ));
-    }
-    meta
-}
-
-pub fn write_meta(path: &Path, request: &AvchdMetaRequest<'_>) -> Result<(), AvchdError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, build_meta(request))?;
-    Ok(())
-}
-
-fn format_chapter(millis: u64) -> String {
-    let total_seconds = millis / 1000;
-    let milliseconds = millis % 1000;
-    let hours = total_seconds / 3600;
-    let minutes = (total_seconds % 3600) / 60;
-    let seconds = total_seconds % 60;
-    format!("{hours:02}:{minutes:02}:{seconds:02}.{milliseconds:03}")
-}
-
 fn normalize_language(language: &str) -> String {
     kinodisc_domain::LanguageCode::from_code(language)
         .unwrap_or(kinodisc_domain::LanguageCode::Undetermined)
         .iso_639_2()
         .to_string()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TsMuxerTargetKind {
-    Iso,
-    Folder,
-}
-
-#[derive(Debug, Clone)]
-pub struct TsMuxerReport {
-    pub path: PathBuf,
-    pub kind: TsMuxerTargetKind,
-    pub size_bytes: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct TsMuxer {
-    pub binary: PathBuf,
-}
-
-impl Default for TsMuxer {
-    fn default() -> Self {
-        Self {
-            binary: {
-                let primary = resolve_binary("tsMuxeR");
-                if primary.components().count() > 1 {
-                    primary
-                } else {
-                    resolve_binary("tsmuxer")
-                }
-            },
-        }
-    }
-}
-
-impl TsMuxer {
-    pub fn new(binary: impl Into<PathBuf>) -> Self {
-        Self {
-            binary: binary.into(),
-        }
-    }
-
-    pub async fn mux_iso(
-        &self,
-        meta: &Path,
-        output: &Path,
-        work_dir: &Path,
-    ) -> Result<TsMuxerReport, AvchdError> {
-        self.mux(meta, output, work_dir, TsMuxerTargetKind::Iso)
-            .await
-    }
-
-    pub async fn mux_folder(
-        &self,
-        meta: &Path,
-        output: &Path,
-        work_dir: &Path,
-    ) -> Result<TsMuxerReport, AvchdError> {
-        self.mux(meta, output, work_dir, TsMuxerTargetKind::Folder)
-            .await
-    }
-
-    async fn mux(
-        &self,
-        meta: &Path,
-        output: &Path,
-        work_dir: &Path,
-        kind: TsMuxerTargetKind,
-    ) -> Result<TsMuxerReport, AvchdError> {
-        if let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        match kind {
-            TsMuxerTargetKind::Iso => {
-                if output.exists() {
-                    std::fs::remove_file(output)?;
-                }
-            }
-            TsMuxerTargetKind::Folder => {
-                if output.exists() {
-                    std::fs::remove_dir_all(output)?;
-                }
-                std::fs::create_dir_all(output)?;
-            }
-        }
-        let child = Command::from(kinodisc_toolchain::background_command(&self.binary))
-            .arg(meta)
-            .arg(output)
-            .current_dir(work_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
-        let result = timeout(AVCHD_MUX_TIMEOUT, child.wait_with_output())
-            .await
-            .map_err(|_| AvchdError::Timeout)??;
-        if !result.status.success() {
-            let stdout = String::from_utf8_lossy(&result.stdout);
-            let stderr = String::from_utf8_lossy(&result.stderr);
-            let log = format!("{stderr}\n{stdout}");
-            return Err(AvchdError::TsMuxer {
-                code: result.status.code().unwrap_or(-1),
-                stderr: tail(log.trim(), 4_000),
-            });
-        }
-        match kind {
-            TsMuxerTargetKind::Iso => {
-                if !output.is_file() || output.metadata()?.len() == 0 {
-                    return Err(AvchdError::MissingOutput(output.display().to_string()));
-                }
-            }
-            TsMuxerTargetKind::Folder => {
-                if !output.join("BDMV").join("index.bdmv").is_file() {
-                    return Err(AvchdError::MissingOutput(format!(
-                        "{} (BDMV/index.bdmv)",
-                        output.display()
-                    )));
-                }
-                std::fs::create_dir_all(output.join("CERTIFICATE").join("BACKUP"))?;
-            }
-        }
-        let size_bytes = match kind {
-            TsMuxerTargetKind::Iso => output.metadata()?.len(),
-            TsMuxerTargetKind::Folder => directory_size(output)?,
-        };
-        Ok(TsMuxerReport {
-            path: output.to_path_buf(),
-            kind,
-            size_bytes,
-        })
-    }
-}
-
-fn directory_size(path: &Path) -> Result<u64, AvchdError> {
-    let mut total = 0u64;
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        let metadata = entry.metadata()?;
-        if metadata.is_dir() {
-            total = total.saturating_add(directory_size(&entry.path())?);
-        } else {
-            total = total.saturating_add(metadata.len());
-        }
-    }
-    Ok(total)
 }
 
 #[cfg(test)]
@@ -1679,40 +1419,6 @@ mod tests {
         assert!(args.contains("-c:a:0 ac3"), "{args}");
         assert!(args.contains("-c:a:1 copy"), "{args}");
         assert!(args.contains("-metadata:s:a:1 language=spa"), "{args}");
-        let audio = [
-            AvchdMetaAudio {
-                source: "combined.mkv",
-                track: 2,
-                language: "eng",
-                codec: AvchdAudioCodec::Ac3,
-            },
-            AvchdMetaAudio {
-                source: "combined.mkv",
-                track: 3,
-                language: "spa",
-                codec: AvchdAudioCodec::Dts,
-            },
-        ];
-        let meta = build_meta(&AvchdMetaRequest {
-            video: "combined.mkv",
-            audios: &audio,
-            video_track: 1,
-            fps: FrameRate::FPS_23_976,
-            chapters: &[0],
-            capacity: DiscCapacity::Dvd5,
-            maxrate_kbps: 24_000,
-            vbv_bufsize_kbps: 24_000,
-            interactive_graphics: None,
-            subtitles: &[],
-        });
-        assert!(
-            meta.contains("A_AC3, combined.mkv, track=2, lang=eng"),
-            "{meta}"
-        );
-        assert!(
-            meta.contains("A_DTS, combined.mkv, track=3, lang=spa"),
-            "{meta}"
-        );
     }
 
     #[test]
@@ -1730,64 +1436,7 @@ mod tests {
     }
 
     #[test]
-    fn meta_contains_pgs_passthrough_tracks() {
-        let audio = [AvchdMetaAudio {
-            source: "combined.mkv",
-            track: 2,
-            language: "eng",
-            codec: AvchdAudioCodec::Ac3,
-        }];
-        let meta = build_meta(&AvchdMetaRequest {
-            video: "combined.mkv",
-            audios: &audio,
-            video_track: 1,
-            fps: FrameRate::FPS_23_976,
-            chapters: &[0],
-            capacity: DiscCapacity::Bd25,
-            maxrate_kbps: 38_000,
-            vbv_bufsize_kbps: 35_000,
-            interactive_graphics: None,
-            subtitles: &[AvchdMetaSubtitle {
-                source: "combined.mkv",
-                track: 3,
-                language: "spa",
-            }],
-        });
-        assert!(
-            meta.contains("S_HDMV/PGS, combined.mkv, track=3, lang=spa"),
-            "{meta}"
-        );
-    }
-
-    #[test]
-    fn meta_contains_avchd_header_and_sorted_chapters() {
-        let audio = [AvchdMetaAudio {
-            source: "combined.mkv",
-            track: 2,
-            language: "spa",
-            codec: AvchdAudioCodec::Ac3,
-        }];
-        let meta = build_meta(&AvchdMetaRequest {
-            video: "combined.mkv",
-            audios: &audio,
-            video_track: 1,
-            fps: FrameRate::FPS_23_976,
-            chapters: &[20_000, 0, 20_000, 5_000],
-            capacity: DiscCapacity::Dvd5,
-            maxrate_kbps: 24_000,
-            vbv_bufsize_kbps: 24_000,
-            interactive_graphics: None,
-            subtitles: &[],
-        });
-        assert!(meta.starts_with("MUXOPT --avchd --vbv-bufsize=24000 --vbv-maxrate=24000"));
-        assert!(meta.contains("--custom-chapters=00:00:00.000;00:00:05.000;00:00:20.000"));
-        assert!(meta.contains("V_MPEG4/ISO/AVC, combined.mkv, track=1"));
-        assert!(meta.contains("A_AC3, combined.mkv, track=2, lang=spa"));
-    }
-
-    #[test]
-    fn meta_normalizes_iso_639_1_and_bibliographic_codes() {
-        let chapters = [0];
+    fn language_codes_become_iso_639_2_terminologic() {
         for (input, expected) in [
             ("es", "spa"),
             ("eng", "eng"),
@@ -1803,53 +1452,8 @@ mod tests {
             ("und", "und"),
             ("unknown", "und"),
         ] {
-            let audio = [AvchdMetaAudio {
-                source: "combined.mkv",
-                track: 2,
-                language: input,
-                codec: AvchdAudioCodec::Ac3,
-            }];
-            let meta = build_meta(&AvchdMetaRequest {
-                video: "combined.mkv",
-                audios: &audio,
-                video_track: 1,
-                fps: FrameRate::FPS_23_976,
-                chapters: &chapters,
-                capacity: DiscCapacity::Bd25,
-                maxrate_kbps: 24_000,
-                vbv_bufsize_kbps: 30_000,
-                interactive_graphics: None,
-                subtitles: &[],
-            });
-            assert!(
-                meta.contains(&format!("lang={expected}")),
-                "input {input} did not normalize to {expected}: {meta}"
-            );
+            assert_eq!(normalize_language(input), expected, "input {input}");
         }
-    }
-
-    #[test]
-    fn meta_injects_blu_ray_header_and_interactive_graphics() {
-        let audio = [AvchdMetaAudio {
-            source: "combined.mkv",
-            track: 2,
-            language: "spa",
-            codec: AvchdAudioCodec::Ac3,
-        }];
-        let meta = build_meta(&AvchdMetaRequest {
-            video: "combined.mkv",
-            audios: &audio,
-            video_track: 1,
-            fps: FrameRate::FPS_23_976,
-            chapters: &[0],
-            capacity: DiscCapacity::Bd25,
-            maxrate_kbps: 38_000,
-            vbv_bufsize_kbps: 35_000,
-            interactive_graphics: Some("/tmp/root.igs"),
-            subtitles: &[],
-        });
-        assert!(meta.starts_with("MUXOPT --blu-ray --vbv-bufsize=35000 --vbv-maxrate=38000"));
-        assert!(meta.contains("S_HDMV/PGS, /tmp/root.igs, track=1, lang=und"));
     }
 
     #[test]

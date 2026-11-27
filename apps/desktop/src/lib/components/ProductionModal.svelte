@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { isAbsolutePath, nativePath } from "../utils/format";
+  import { formatFrameRate, isAbsolutePath, nativePath } from "../utils/format";
   import { announceFinished } from "../ui/finish";
   import { ui } from "../ui/state.svelte";
   import Icon from "../ui/Icon.svelte";
@@ -30,7 +30,9 @@
     HARDWARE_LABELS,
     recommendedEncoder,
     rememberContent,
+    rememberFilmPulldown,
     rememberedContent,
+    rememberedFilmPulldown,
     type EncoderChoice,
   } from "../utils/encoder";
 
@@ -91,7 +93,40 @@
   function clampCopies(value: number): number {
     return Number.isFinite(value) ? Math.min(MAX_COPIES, Math.max(1, Math.round(value))) : 1;
   }
-  let encoderChoice = $state<EncoderChoice>("auto");
+  // The simple choice: "max" is the slowest CPU setting, remembered on this
+  // computer; anything else picked in the advanced list is "custom".
+  const COMPRESSION_KEY = "kinodisc_compression";
+  const ADVANCED_KEY = "kinodisc_production_advanced";
+  function rememberedFlag(key: string): boolean {
+    try {
+      return localStorage.getItem(key) === "1";
+    } catch {
+      return false;
+    }
+  }
+  function rememberFlag(key: string, value: boolean): void {
+    try {
+      if (value) localStorage.setItem(key, "1");
+      else localStorage.removeItem(key);
+    } catch {
+      // Not remembered this time.
+    }
+  }
+  let encoderChoice = $state<EncoderChoice>(rememberedFlag(COMPRESSION_KEY) ? "cpuSlowest" : "auto");
+  const compression = $derived<"normal" | "max" | "custom">(
+    encoderChoice === "auto" ? "normal" : encoderChoice === "cpuSlowest" ? "max" : "custom",
+  );
+  function setCompression(value: string) {
+    if (value === "max") encoderChoice = "cpuSlowest";
+    else if (value === "normal") encoderChoice = "auto";
+  }
+  $effect(() => {
+    rememberFlag(COMPRESSION_KEY, encoderChoice === "cpuSlowest");
+  });
+  let advancedOpen = $state(rememberedFlag(ADVANCED_KEY));
+  $effect(() => {
+    rememberFlag(ADVANCED_KEY, advancedOpen);
+  });
   // How much of the processor the render takes; remembered on this computer.
   const CPU_KEY = "kinodisc_cpu_usage";
   function rememberedCpu(): CpuUsage {
@@ -115,6 +150,10 @@
   let contentType = $state<ContentType>(rememberedContent(projectStore.project?.id));
   $effect(() => {
     rememberContent(projectStore.project?.id, contentType);
+  });
+  let filmPulldown = $state(rememberedFilmPulldown(projectStore.project?.id));
+  $effect(() => {
+    rememberFilmPulldown(projectStore.project?.id, filmPulldown);
   });
   // "One disc per episode" and the like are remembered per project.
   type DiscSplit = "single" | "fitToDisc" | "perEpisode";
@@ -141,6 +180,27 @@
   const project = $derived(projectStore.project);
   const devices = $derived(projectStore.devices);
   const isAvchd = $derived(project?.disc.mode === "avchd");
+  const ntscDvd = $derived(Boolean(project) && project?.disc.mode !== "avchd" && project?.disc.standard === "ntsc");
+  // How many of the disc's videos run at each rate, for the film option.
+  const rateSummary = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const episode of project?.episodes ?? []) {
+      const fps = formatFrameRate(projectStore.episodeSourceFrameRate(episode)) || "?";
+      counts.set(fps, (counts.get(fps) ?? 0) + 1);
+    }
+    return [...counts].map(([fps, count]) => `${count} × ${fps} fps`).join(" · ");
+  });
+  // Episodes an NTSC DVD can store as film: progressive, 23.976 or 24 pictures per second.
+  const filmSources = $derived(
+    project && project.disc.mode !== "avchd" && project.disc.standard === "ntsc"
+      ? project.episodes.filter((episode) => {
+          const video = projectStore.assetFor(episode.video)?.probe.video;
+          if (!video || video.frameRate.den <= 0) return false;
+          const fps = video.frameRate.num / video.frameRate.den;
+          return fps >= 23.9 && fps <= 24.1 && (video.fieldOrder ?? "progressive") === "progressive";
+        }).length
+      : 0,
+  );
   // Interlaced/PsF formats never use the GPU (the engine keeps them on x264).
   const cpuOnly = $derived(cpuOnlyFormat(project));
   const hardwareEncoders = $derived(isAvchd && !cpuOnly ? (projectStore.toolsReport?.hardwareEncoders?.h264 ?? []) : []);
@@ -161,10 +221,11 @@
           ? t("Automático ({encoder}; si falla, CPU medio)", { encoder: HARDWARE_LABELS[hardwareEncoders[0]] })
           : t("Automático (CPU medio)"),
       },
-      { value: "cpuFast", label: mark("cpuFast", t("CPU rápido (x264 fast): la base, el más rápido")) },
-      { value: "cpuOnly", label: mark("cpuOnly", t("CPU medio (x264 medium): ~5 % menos bits que el rápido, casi el mismo tiempo")) },
-      { value: "cpuSlow", label: mark("cpuSlow", t("CPU lento (x264 slow): ~8 % menos bits que el rápido, ~1,2× el tiempo")) },
-      { value: "cpuSlower", label: mark("cpuSlower", t("CPU máximo (x264 slower): ~10 % menos bits que el rápido, ~1,5× el tiempo")) },
+      { value: "cpuFast", label: mark("cpuFast", t("CPU rápido (x264 fast): la base")) },
+      { value: "cpuOnly", label: mark("cpuOnly", t("CPU medio (x264 medium): 2 a 4 % menos bits que el rápido, el mismo tiempo")) },
+      { value: "cpuSlow", label: mark("cpuSlow", t("CPU lento (x264 slow): entre el medio y el muy lento, ~1,4× el tiempo")) },
+      { value: "cpuSlower", label: mark("cpuSlower", t("CPU muy lento (x264 slower): 6 a 10 % menos bits que el rápido, ~1,7× el tiempo")) },
+      { value: "cpuSlowest", label: mark("cpuSlowest", t("CPU máximo (x264 veryslow): 8 a 12 % menos bits que el rápido, 2,2 a 2,7× el tiempo")) },
       ...hardwareEncoders.map((encoder) => ({
         value: `hw:${encoder}` as EncoderChoice,
         label: t("{encoder} (GPU): lo más rápido, menos calidad a tasas bajas", { encoder: HARDWARE_LABELS[encoder] }),
@@ -624,7 +685,7 @@
         // name, so an "<name>.iso" made earlier is neither replaced nor removed.
         const isoName = mode === "folder" ? `${partName}.kinodisc-tmp.iso` : `${partName}.iso`;
         const outcome = await unwrap(
-          commands.renderStart(part.project, root, encoderPreference(encoderChoice), isoName, cpuUsage, contentType, channel),
+          commands.renderStart(part.project, root, encoderPreference(encoderChoice), isoName, cpuUsage, contentType, filmPulldown && filmSources > 0, channel),
         );
         elapsedMs += outcome.elapsedMs;
         projectStore.renderVerification = outcome.verification ?? null;
@@ -915,22 +976,51 @@
         {t("Apagar la computadora al terminar")}
       </label>
 
+      {#if mode !== "existing"}
+        <button
+          type="button"
+          class="ui-btn ui-btn-sm mt-3"
+          aria-expanded={advancedOpen}
+          onclick={() => (advancedOpen = !advancedOpen)}
+        >
+          {advancedOpen ? "▾" : "▸"} {t("Opciones avanzadas")}
+        </button>
+      {/if}
+
       {#if isAvchd && mode !== "existing"}
         <div class="mt-3 rounded-md border border-slate-700 px-3 py-2">
           <label class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
-            <span class="text-[13px] text-slate-300">{t("Codificación H.264")}</span>
-            <select class="ui-input ui-input-sm min-w-0 max-w-full" bind:value={encoderChoice} disabled={busy}>
-              {#each encoderOptions as option (option.value)}
-                <option value={option.value}>{option.label}</option>
-              {/each}
+            <span class="text-[13px] text-slate-300">{t("Compresión")}</span>
+            <select
+              class="ui-input ui-input-sm min-w-0 max-w-full"
+              value={compression}
+              disabled={busy}
+              onchange={(event) => setCompression(event.currentTarget.value)}
+            >
+              <option value="normal">{t("Normal")} · {t("recomendado")}</option>
+              <option value="max">{t("Máxima: más minutos en el mismo disco con la misma calidad (tarda bastante más)")}</option>
+              {#if compression === "custom"}
+                <option value="custom">{t("Personalizada (opciones avanzadas)")}</option>
+              {/if}
             </select>
           </label>
-          <p class="ui-hint mt-1.5">
-            {t("El tamaño del disco es el mismo con cualquier opción: el plan ya reparte todo el espacio. Cambian la calidad y el tiempo.")}
-            {#if cpuOnly}
-              {t("Este formato (entrelazado o PsF) se codifica siempre por CPU.")}
-            {/if}
-          </p>
+          <p class="ui-hint mt-1.5">{t("«Máxima» usa el ajuste más lento del codificador por CPU (x264 veryslow): en las pruebas, 4 a 7 % menos bits que el medio para la misma calidad, con 2 a 2,7 veces el tiempo. «Normal» usa la placa de vídeo si hay una, o el ajuste medio.")}</p>
+          {#if advancedOpen}
+            <label class="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+              <span class="text-[13px] text-slate-300">{t("Codificación H.264")}</span>
+              <select class="ui-input ui-input-sm min-w-0 max-w-full" bind:value={encoderChoice} disabled={busy}>
+                {#each encoderOptions as option (option.value)}
+                  <option value={option.value}>{option.label}</option>
+                {/each}
+              </select>
+            </label>
+            <p class="ui-hint mt-1.5">
+              {t("El tamaño del disco es el mismo con cualquier opción: el plan ya reparte todo el espacio. Cambian la calidad y el tiempo.")}
+              {#if cpuOnly}
+                {t("Este formato (entrelazado o PsF) se codifica siempre por CPU.")}
+              {/if}
+            </p>
+          {/if}
           <label class="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
             <span class="text-[13px] text-slate-300">{t("Tipo de contenido")}</span>
             <select class="ui-input ui-input-sm min-w-0 max-w-full" bind:value={contentType} disabled={busy}>
@@ -948,7 +1038,7 @@
               {t("Los ajustes normales del codificador.")}
             {/if}
           </p>
-          {#if project?.disc.video.kind === "avchd"}
+          {#if advancedOpen && project?.disc.video.kind === "avchd"}
             <label class="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
               <span class="text-[13px] text-slate-300">{t("GOP")}</span>
               <select
@@ -967,7 +1057,7 @@
         </div>
       {/if}
 
-      {#if !isAvchd && mode !== "existing" && project?.disc.video.kind === "dvd"}
+      {#if advancedOpen && !isAvchd && mode !== "existing" && project?.disc.video.kind === "dvd"}
         <div class="mt-3 rounded-md border border-slate-700 px-3 py-2">
           <label class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
             <span class="text-[13px] text-slate-300">{t("Primera pasada completa (más lenta)")}</span>
@@ -980,6 +1070,32 @@
             />
           </label>
           <p class="ui-hint mt-1.5">{t("Analiza el vídeo con más detalle antes de codificarlo. Tarda bastante más y en las pruebas la calidad casi no cambió.")}</p>
+        </div>
+      {/if}
+
+      {#if ntscDvd && (project?.episodes.length ?? 0) > 0 && mode !== "existing"}
+        <div class="mt-3 rounded-md border border-slate-700 px-3 py-2">
+          <label class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+            <span class="text-[13px] text-slate-300">{t("Imágenes por segundo")}</span>
+            <select
+              class="ui-input ui-input-sm min-w-0 max-w-full"
+              value={filmPulldown && filmSources > 0 ? "keep" : "force"}
+              disabled={busy || filmSources === 0}
+              onchange={(event) => (filmPulldown = event.currentTarget.value === "keep")}
+            >
+              <option value="keep">{t("Mantener las del vídeo cuando el DVD lo permite")} · {t("recomendado")}</option>
+              <option value="force">{t("Siempre 29,97")}</option>
+            </select>
+          </label>
+          <p class="ui-hint mt-1.5">
+            {t("Vídeos del disco: {list}.", { list: rateSummary })}
+            {#if filmSources === 0}
+              {t("Ninguno es de 24 imágenes por segundo: todos se graban a 29,97.")}
+            {:else if filmPulldown && filmSources < (project?.episodes.length ?? 0)}
+              {t("Los de 24 se guardan en 24; los demás se graban a 29,97.")}
+            {/if}
+          </p>
+          <p class="ui-hint mt-1.5">{t("Un DVD NTSC reproduce 29,97 imágenes por segundo. Un vídeo de 24 se puede guardar con sus 24 imágenes y el reproductor repite los campos: en las pruebas, 3 a 7 % menos bits a igual calidad. Ningún reproductor se probó todavía con estos discos: si el tuyo no los reproduce bien, elige «Siempre 29,97».")}</p>
         </div>
       {/if}
 

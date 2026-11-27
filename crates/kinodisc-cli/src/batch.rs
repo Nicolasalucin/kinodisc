@@ -240,6 +240,7 @@ pub async fn run(args: &[String]) -> ExitCode {
             encoder: kinodisc_toolchain::EncoderPreference::Auto,
             cpu: kinodisc_toolchain::CpuUsage::default(),
             content: kinodisc_toolchain::ContentType::default(),
+            film_pulldown: true,
         })
         .await;
         items[index].seconds = started.elapsed().as_secs_f64();

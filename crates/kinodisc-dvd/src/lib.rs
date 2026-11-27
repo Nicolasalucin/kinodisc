@@ -2,6 +2,7 @@
 //! audio, MPEG-PS multiplexing and dvdauthor XML generation.
 
 pub mod authoring;
+pub mod pulldown;
 
 pub use authoring::{
     apply_layer_break, apply_region_mask, build_dvdauthor_xml, write_dvdauthor_xml, AuthorError,
@@ -63,6 +64,30 @@ pub struct VideoEncodeConfig {
     pub pre_filter: Option<String>,
     /// The slow first pass of 1.3.0 and before.
     pub full_first_pass: bool,
+    /// NTSC only: store a 23.976/24 fps film as 23.976 pictures with 3:2
+    /// repeat flags (`pulldown`) instead of repeating one picture in five.
+    pub film_pulldown: bool,
+}
+
+impl VideoEncodeConfig {
+    /// Pictures per second the encoder stores, as a fraction.
+    pub const fn coded_rate(&self) -> (u64, u64) {
+        match self.standard {
+            TvStandard::Ntsc if self.film_pulldown => (24_000, 1_001),
+            TvStandard::Ntsc => (30_000, 1_001),
+            TvStandard::Pal => (25, 1),
+        }
+    }
+
+    /// GOP length in stored pictures: with repeat flags a GOP may last 36
+    /// fields, which is 14 film pictures.
+    pub fn gop_pictures(&self) -> u16 {
+        if self.film_pulldown {
+            self.gop_frames.min(pulldown::FILM_GOP_PICTURES)
+        } else {
+            self.gop_frames
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +261,13 @@ impl EncodeRequest {
                 "el GOP no puede ser cero".to_string(),
             ));
         }
+        if self.video.film_pulldown
+            && (self.video.standard != TvStandard::Ntsc || self.video.interlaced)
+        {
+            return Err(EncodeError::InvalidConfig(
+                "las marcas de repetición solo valen para vídeo progresivo en NTSC".to_string(),
+            ));
+        }
         for audio in &self.audio_tracks {
             if !kinodisc_domain::ac3_bitrate_supported(audio.bitrate_kbps, audio.channels) {
                 return Err(EncodeError::InvalidConfig(format!(
@@ -293,6 +325,8 @@ pub enum EncodeError {
     Timeout(&'static str),
     #[error("FFmpeg dejó de avanzar en {}", stage_label(.0))]
     Stalled(&'static str),
+    #[error("no se pudieron escribir las marcas de repetición: {0}")]
+    Pulldown(#[from] pulldown::PulldownError),
 }
 
 /// A stage in words, for error messages.
@@ -363,6 +397,9 @@ impl DvdEncoder {
             pass2 = with_low_quant_floor(pass2);
         }
         run_stage(&self.ffmpeg, self.cpu, &pass2, "pass2", progress.as_ref()).await?;
+        if request.video.film_pulldown {
+            flag_film_pictures(request.video_m2v()).await?;
+        }
 
         let mut audio_ac3 = Vec::with_capacity(request.audio_tracks.len());
         for index in 0..request.audio_tracks.len() {
@@ -482,6 +519,18 @@ impl DvdEncoder {
         }
         Ok(request.output_mpg.clone())
     }
+}
+
+/// Rewrites the 23.976 stream as a 29.97 stream with repeat flags, in place.
+async fn flag_film_pictures(video_m2v: PathBuf) -> Result<(), EncodeError> {
+    let flagged = video_m2v.with_extension("pulldown.m2v");
+    tokio::task::spawn_blocking(move || -> Result<(), EncodeError> {
+        pulldown::apply_soft_pulldown(&video_m2v, &flagged)?;
+        std::fs::rename(&flagged, &video_m2v)?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| EncodeError::Io(std::io::Error::other(error)))?
 }
 
 /// `args` with the filter graph on one thread (output bytes do not change:
@@ -731,9 +780,13 @@ pub fn build_scale_filter(video: &VideoEncodeConfig) -> String {
     let sar = target_sar(video.standard, video.aspect, video.profile);
     // DVD-Video only allows 29.97 (NTSC) or 25 (PAL) fps; without a conform
     // 23.976/24/30/50/60 fps sources keep an illegal MPEG-2 frame_rate_code.
-    let fps = match video.standard {
-        TvStandard::Ntsc => "fps=30000/1001,",
-        TvStandard::Pal => "fps=25,",
+    // A film with repeat flags is stored at 23.976 and flagged as 29.97
+    // after the encode (`pulldown`).
+    let (rate_num, rate_den) = video.coded_rate();
+    let fps = if rate_den == 1 {
+        format!("fps={rate_num},")
+    } else {
+        format!("fps={rate_num}/{rate_den},")
     };
     let fit = match video.scale_mode {
         VideoScaleMode::Letterbox | VideoScaleMode::Contain => FrameFit::Contain,
@@ -839,13 +892,13 @@ fn passlog_file(request: &EncodeRequest) -> PathBuf {
 /// (`None` when its statistics cannot be read: then nothing changes).
 fn first_pass_percent(request: &EncodeRequest) -> Option<u64> {
     let log = std::fs::read_to_string(passlog_file(request)).ok()?;
-    first_pass_percent_of(&log, request.video.standard, request.video.video_kbps)
+    first_pass_percent_of(&log, request.video.coded_rate(), request.video.video_kbps)
 }
 
 /// One line per frame: `in:0 out:0 type:1 q:236 itex:… ptex:… mv:… misc:… …;`.
 /// The four bit counts add up to the frame (`hbits`, the headers, is about
 /// 5 kb/s and is left out).
-fn first_pass_percent_of(log: &str, standard: TvStandard, video_kbps: u32) -> Option<u64> {
+fn first_pass_percent_of(log: &str, rate: (u64, u64), video_kbps: u32) -> Option<u64> {
     let mut frames = 0u64;
     let mut bits = 0u64;
     for line in log.lines().filter(|line| line.starts_with("in:")) {
@@ -862,10 +915,7 @@ fn first_pass_percent_of(log: &str, standard: TvStandard, video_kbps: u32) -> Op
     if frames == 0 || video_kbps == 0 {
         return None;
     }
-    let (num, den): (u64, u64) = match standard {
-        TvStandard::Ntsc => (30_000, 1_001),
-        TvStandard::Pal => (25, 1),
-    };
+    let (num, den) = rate;
     let bits_per_second = bits * num / (frames * den);
     // bits per second / 1000 / kb/s * 100.
     Some(bits_per_second / (10 * u64::from(video_kbps)))
@@ -1037,6 +1087,7 @@ pub fn build_menu_encode_args(request: &MenuEncodeRequest) -> Vec<String> {
         scale_mode: VideoScaleMode::Stretch,
         pre_filter: None,
         full_first_pass: false,
+        film_pulldown: false,
     };
     let mut args = vec![
         "-hide_banner".to_string(),
@@ -1398,6 +1449,27 @@ fn format_millis(millis: u64) -> String {
 /// FFmpeg `-cmp`/`-subcmp` of the second pass.
 const MOTION_COMPARE: &str = "satd";
 
+/// Fields of margin the film line keeps free in the DVD buffer.
+const FILM_VBV_MARGIN_FIELDS: u64 = 2;
+
+/// Buffer the encoder's rate control may fill, in bits.
+///
+/// FFmpeg takes one picture out of the buffer every 1/23.976 s. With repeat
+/// flags the player takes them out after 3 and 2 fields in turn (ISO/IEC
+/// 13818-2 annex C.11: a B-frame by its own flag, an I- or P-frame by the
+/// flag of the anchor before it), so a picture can leave up to a field before
+/// the encoder counted on it. The film line therefore encodes against a
+/// buffer two fields of peak rate smaller, in whole 16384-bit units, and
+/// `pulldown` declares the full DVD buffer in the stream.
+fn rate_control_buffer_bits(video: &VideoEncodeConfig) -> u32 {
+    if !video.film_pulldown {
+        return DVD_VBV_BITS;
+    }
+    let margin = u64::from(video.maxrate_kbps) * 1_000 * FILM_VBV_MARGIN_FIELDS * 1_001 / 60_000;
+    let bits = u64::from(DVD_VBV_BITS).saturating_sub(margin);
+    (bits / 16_384 * 16_384) as u32
+}
+
 fn video_codec_args(video: &VideoEncodeConfig) -> Vec<String> {
     let mut args = vec![
         "-vf".to_string(),
@@ -1411,9 +1483,9 @@ fn video_codec_args(video: &VideoEncodeConfig) -> Vec<String> {
         "-maxrate".to_string(),
         format!("{}k", video.maxrate_kbps),
         "-bufsize".to_string(),
-        DVD_VBV_BITS.to_string(),
+        rate_control_buffer_bits(video).to_string(),
         "-g".to_string(),
-        video.gop_frames.to_string(),
+        video.gop_pictures().to_string(),
         "-bf".to_string(),
         video.b_frames.to_string(),
         "-b_strategy".to_string(),
@@ -1570,6 +1642,7 @@ mod tests {
             scale_mode: VideoScaleMode::Letterbox,
             pre_filter: None,
             full_first_pass: false,
+            film_pulldown: false,
         }
     }
 
@@ -1686,26 +1759,80 @@ mod tests {
     }
 
     #[test]
+    fn a_film_with_repeat_flags_is_encoded_at_its_own_rate() {
+        let mut film = request();
+        film.video.film_pulldown = true;
+        film.video.gop_frames = 18;
+        film.validate().unwrap();
+        let args = build_pass2_args(&film).join(" ");
+        assert!(args.contains("fps=24000/1001,"), "{args}");
+        assert!(!args.contains("fps=30000/1001"), "{args}");
+        // 14 film pictures last 35 fields: the longest GOP inside 36.
+        assert!(args.contains("-g 14 "), "{args}");
+        let first = build_pass1_args(&film).join(" ");
+        assert!(first.contains("fps=24000/1001,"), "{first}");
+        assert!(first.contains("-g 14 "), "{first}");
+        assert_eq!(film.video.coded_rate(), (24_000, 1_001));
+
+        let plain = request();
+        let args = build_pass2_args(&plain).join(" ");
+        assert!(args.contains("fps=30000/1001,"), "{args}");
+        assert_eq!(plain.video.coded_rate(), (30_000, 1_001));
+    }
+
+    #[test]
+    fn a_film_with_repeat_flags_keeps_two_fields_of_buffer_free() {
+        let mut film = request();
+        film.video.film_pulldown = true;
+        film.video.maxrate_kbps = 9_800;
+        // Two fields at 9800 kb/s are 326,993 bits: 92 units of 16384 are left.
+        assert_eq!(rate_control_buffer_bits(&film.video), 92 * 16_384);
+        for args in [build_pass1_args(&film), build_pass2_args(&film)] {
+            assert!(has_pair(&args, "-bufsize", "1507328"), "{args:?}");
+        }
+        film.video.maxrate_kbps = 5_000;
+        let bits = rate_control_buffer_bits(&film.video);
+        assert_eq!(bits % 16_384, 0);
+        // Two fields at 5000 kb/s are 166,833 bits.
+        assert!(DVD_VBV_BITS - bits >= 166_833);
+        assert!(DVD_VBV_BITS - bits < 166_833 + 16_384);
+
+        let plain = request();
+        assert_eq!(rate_control_buffer_bits(&plain.video), DVD_VBV_BITS);
+        let args = build_pass2_args(&plain);
+        assert!(has_pair(&args, "-bufsize", "1835008"), "{args:?}");
+    }
+
+    #[test]
+    fn repeat_flags_need_progressive_ntsc_video() {
+        let mut pal = request();
+        pal.video.standard = TvStandard::Pal;
+        pal.video.film_pulldown = true;
+        assert!(pal.validate().is_err());
+        let mut interlaced = request();
+        interlaced.video.film_pulldown = true;
+        interlaced.video.interlaced = true;
+        assert!(interlaced.validate().is_err());
+    }
+
+    #[test]
     fn an_easy_video_gets_the_lower_quantiser_floor() {
         // 30 NTSC frames of 100,000 bits: 2,997 kb/s.
         let line = "in:0 out:0 type:1 q:236 itex:90000 ptex:4000 mv:5000 misc:1000 fcode:1 bcode:1 mc-var:0 var:0 icount:1350 hbits:1534;\n";
         let log = line.repeat(30);
         assert_eq!(
-            first_pass_percent_of(&log, TvStandard::Ntsc, 4_500),
+            first_pass_percent_of(&log, (30_000, 1_001), 4_500),
             Some(66)
         );
         assert_eq!(
-            first_pass_percent_of(&log, TvStandard::Ntsc, 3_000),
+            first_pass_percent_of(&log, (30_000, 1_001), 3_000),
             Some(99)
         );
         // The same 30 frames at PAL's 25 a second: 2,500 kb/s.
+        assert_eq!(first_pass_percent_of(&log, (25, 1), 2_500), Some(100));
+        assert_eq!(first_pass_percent_of("", (30_000, 1_001), 4_500), None);
         assert_eq!(
-            first_pass_percent_of(&log, TvStandard::Pal, 2_500),
-            Some(100)
-        );
-        assert_eq!(first_pass_percent_of("", TvStandard::Ntsc, 4_500), None);
-        assert_eq!(
-            first_pass_percent_of("not a log\n", TvStandard::Ntsc, 4_500),
+            first_pass_percent_of("not a log\n", (30_000, 1_001), 4_500),
             None
         );
 

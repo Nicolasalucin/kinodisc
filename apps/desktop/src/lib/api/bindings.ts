@@ -124,7 +124,7 @@ export const commands = {
 	 */
 	projectSplit: (project: Project_Deserialize, strategy: SplitStrategy) => typedError<SplitResult_Serialize, string>(__TAURI_INVOKE("project_split", { project, strategy })),
 	burnListDevices: () => typedError<OpticalDevice[], string>(__TAURI_INVOKE("burn_list_devices")),
-	renderStart: (project: Project_Deserialize, outputDir: string, hardwareEncoding: EncoderPreference, isoName: string | null, cpuUsage: CpuUsage | null, content: ContentType | null, channel: Channel<JobEvent_Deserialize>) => typedError<RenderOutcome_Serialize, string>(__TAURI_INVOKE("render_start", { project, outputDir, hardwareEncoding, isoName, cpuUsage, content, channel })),
+	renderStart: (project: Project_Deserialize, outputDir: string, hardwareEncoding: EncoderPreference, isoName: string | null, cpuUsage: CpuUsage | null, content: ContentType | null, filmPulldown: boolean | null, channel: Channel<JobEvent_Deserialize>) => typedError<RenderOutcome_Serialize, string>(__TAURI_INVOKE("render_start", { project, outputDir, hardwareEncoding, isoName, cpuUsage, content, filmPulldown, channel })),
 	/**
 	 *  Cancela la generación activa. Los procesos FFmpeg/herramientas se crean con
 	 *  `kill_on_drop` y la bandera compartida detiene la escritura UDF, por lo que
@@ -823,17 +823,29 @@ export type EncoderCapabilities_Serialize = {
 export type EncoderPreference = 
 /**  The first working hardware encoder, otherwise x264 `medium`. */
 "auto" | 
-/**  x264 `fast`: quicker, a little less quality at the same size. */
+/**
+ *  x264 `fast`. Measured on two film excerpts (cmp-150): `medium` needs
+ *  2 to 4 % fewer bits for the same quality in about the same time.
+ */
 "cpuFast" | 
 /**  x264 `medium` (the historical "CPU only" choice). */
 "cpuOnly" | 
-/**  x264 `slow`: about twice the time of `medium`, best quality per byte. */
+/**
+ *  x264 `slow`: about 1.4 times the time of `medium` (cmp-150, one
+ *  encode per clip).
+ */
 "cpuSlow" | 
 /**
- *  x264 `slower`: about a third more time than `slow` for a little more
- *  quality (bluray-compat caps its extra refs and B-frames).
+ *  x264 `slower`: 6 to 10 % fewer bits than `fast` for the same quality,
+ *  about 1.7 times the time (bluray-compat caps its extra refs and
+ *  B-frames).
  */
-"cpuSlower" | { prefer: HardwareEncoder };
+"cpuSlower" | 
+/**
+ *  x264 `veryslow`: 8 to 12 % fewer bits than `fast`, 2.2 to 2.7 times
+ *  the time. The stream stays inside the disc's limits (cmp-150).
+ */
+"cpuSlowest" | { prefer: HardwareEncoder };
 
 export type EncodingPriority = "low" | "medium" | "high";
 
@@ -2049,7 +2061,7 @@ export type ThumbnailSpec_Serialize = {
 	fps: FrameRate,
 };
 
-export type ToolId = "ffmpeg" | "ffprobe" | "dvdauthor" | "spumux" | "xorriso" | "growisofs" | "dvdRwMediaInfo" | "tsMuxer";
+export type ToolId = "ffmpeg" | "ffprobe" | "dvdauthor" | "spumux" | "xorriso" | "growisofs" | "dvdRwMediaInfo";
 
 /**  How a missing tool can be installed on this computer. */
 export type ToolInstallOption = ToolInstallOption_Serialize | ToolInstallOption_Deserialize;

@@ -33,6 +33,16 @@
   import { loadPlaybackSupport, previewUrlFor } from "../playback";
   import { projectStore } from "../stores/project.svelte";
   import { formatDuration } from "../utils/format";
+  import {
+    frameDisplaySeconds,
+    frameIndexAt,
+    frameStartMs,
+    rememberTimeStep,
+    rememberedTimeStep,
+    snapMs,
+    stepMs,
+    type TimeStep,
+  } from "../utils/timeline";
 
   let videoEl: HTMLVideoElement | undefined = $state();
   let timelineEl: HTMLDivElement | undefined = $state();
@@ -52,6 +62,21 @@
   const episode = $derived(projectStore.selectedEpisode);
   const sourcePath = $derived(episode ? projectStore.episodeSourcePath(episode) : null);
   const sourceDuration = $derived(episode ? projectStore.episodeSourceDuration(episode) : 0);
+  const sourceRate = $derived(episode ? projectStore.episodeSourceFrameRate(episode) : null);
+  let chosenStep = $state<TimeStep>(rememberedTimeStep());
+  // Without a frame rate there is no frame grid: fall back to seconds.
+  const timeStep = $derived<TimeStep>(chosenStep === "frame" && !sourceRate ? "second" : chosenStep);
+  const currentFrame = $derived(sourceRate ? frameIndexAt(currentTimeMs, sourceRate) : null);
+
+  function setTimeStep(step: TimeStep) {
+    chosenStep = step;
+    rememberTimeStep(step);
+  }
+
+  /** Seconds that make the `<video>` show the picture at `ms`. */
+  function displaySeconds(ms: number): number {
+    return sourceRate ? frameDisplaySeconds(ms, sourceRate) : ms / 1000;
+  }
 
   // Filmstrip: 10 frames across the source, extracted once per file.
   const FILMSTRIP_FRAMES = 10;
@@ -154,7 +179,7 @@
     seekFrame = requestAnimationFrame(() => {
       seekFrame = null;
       if (!videoEl || !previewPath) return;
-      videoEl.currentTime = target / 1000;
+      videoEl.currentTime = displaySeconds(target);
       currentTimeMs = target;
     });
     return () => {
@@ -168,7 +193,7 @@
   function onLoadedMetadata() {
     if (!videoEl) return;
     localError = null;
-    videoEl.currentTime = startMs / 1000;
+    videoEl.currentTime = displaySeconds(startMs);
     currentTimeMs = startMs;
   }
 
@@ -183,7 +208,11 @@
 
   function onTimeUpdate() {
     if (!videoEl) return;
-    currentTimeMs = Math.round(videoEl.currentTime * 1000);
+    const now = Math.round(videoEl.currentTime * 1000);
+    // A paused seek lands in the middle of a picture: keep the time that
+    // names that picture instead of the middle.
+    if (!playing && sourceRate && frameIndexAt(now, sourceRate) === frameIndexAt(currentTimeMs, sourceRate)) return;
+    currentTimeMs = now;
     if (playing && currentTimeMs >= endMs) {
       videoEl.pause();
       playing = false;
@@ -223,8 +252,12 @@
 
   function seek(ms: number) {
     const target = Math.max(0, Math.min(sourceDuration, ms));
-    if (videoEl) videoEl.currentTime = target / 1000;
+    if (videoEl) videoEl.currentTime = displaySeconds(target);
     currentTimeMs = target;
+  }
+
+  function stepBy(direction: -1 | 1) {
+    seek(stepMs(currentTimeMs, direction, timeStep, sourceRate));
   }
 
   function setStart(ms: number) {
@@ -255,11 +288,15 @@
   }
 
   function markStart() {
-    setStart(currentTimeMs);
+    setStart(sourceRate ? frameStartMs(frameIndexAt(currentTimeMs, sourceRate), sourceRate) : currentTimeMs);
   }
 
   function markEnd() {
-    setEnd(currentTimeMs);
+    setEnd(
+      sourceRate
+        ? Math.min(sourceDuration, frameStartMs(frameIndexAt(currentTimeMs, sourceRate) + 1, sourceRate))
+        : currentTimeMs,
+    );
   }
 
   function setScaleMode(mode: VideoScaleMode) {
@@ -401,18 +438,23 @@
       dragging = "out";
     } else {
       dragging = "playhead";
-      seek(ms);
+      seek(snapMs(ms, timeStep, sourceRate));
     }
     timelineEl.setPointerCapture(event.pointerId);
   }
 
   function moveTimelineDrag(event: PointerEvent): void {
     if (!dragging) return;
-    const ms = timelineMsAt(event.clientX);
+    const ms = Math.max(0, Math.min(sourceDuration, snapMs(timelineMsAt(event.clientX), timeStep, sourceRate)));
     if (dragging === "in") {
-      setStart(Math.min(ms, Math.max(0, endMs - 500)));
+      // The furthest start the project accepts, on a frame when there is a grid.
+      const limit = Math.max(0, endMs - 500);
+      setStart(Math.min(ms, sourceRate ? frameStartMs(frameIndexAt(limit, sourceRate), sourceRate) : limit));
     } else if (dragging === "out") {
-      setEnd(Math.max(ms, Math.min(sourceDuration, startMs + 500)));
+      // The nearest end it accepts: more than half a second after the start.
+      const limit = startMs + 501;
+      const nearest = sourceRate ? frameStartMs(frameIndexAt(limit, sourceRate) + 1, sourceRate) : limit;
+      setEnd(Math.max(ms, Math.min(sourceDuration, nearest)));
     } else {
       seek(ms);
     }
@@ -428,10 +470,10 @@
   function onTimelineKeydown(event: KeyboardEvent): void {
     if (event.key === "ArrowLeft") {
       event.preventDefault();
-      seek(currentTimeMs - 1_000);
+      stepBy(-1);
     } else if (event.key === "ArrowRight") {
       event.preventDefault();
-      seek(currentTimeMs + 1_000);
+      stepBy(1);
     } else if (event.key === "Home") {
       event.preventDefault();
       seek(startMs);
@@ -611,7 +653,9 @@
         <div class="rounded-lg border border-slate-800 p-3">
           <div class="mb-1.5 flex items-center justify-between text-[11px] text-slate-500">
             <span>{t("Entrada")} <span class="font-mono text-cyan-300">{formatMs(startMs)}</span></span>
-            <span class="font-mono text-slate-200">{formatMs(currentTimeMs)}</span>
+            <span class="font-mono text-slate-200">
+              {formatMs(currentTimeMs)}{#if currentFrame !== null}<span class="ml-1.5 text-slate-400">{t("fotograma {n}", { n: currentFrame })}</span>{/if}
+            </span>
             <span>{t("Salida")} <span class="font-mono text-cyan-300">{formatMs(endMs)}</span></span>
           </div>
           <div
@@ -622,6 +666,9 @@
             aria-valuemin={0}
             aria-valuemax={sourceDuration}
             aria-valuenow={currentTimeMs}
+            aria-valuetext={currentFrame !== null
+              ? `${formatMs(currentTimeMs)}, ${t("fotograma {n}", { n: currentFrame })}`
+              : formatMs(currentTimeMs)}
             onpointerdown={startTimelineDrag}
             onpointermove={moveTimelineDrag}
             onpointerup={endTimelineDrag}
@@ -687,6 +734,36 @@
               class="ui-btn ui-btn-sm"
             >
               {t("Marcar fin")}
+            </button>
+            <span class="mx-1 h-4 w-px bg-slate-700" aria-hidden="true"></span>
+            <button
+              type="button"
+              onclick={() => stepBy(-1)}
+              aria-label={t("Retroceder un paso")}
+              title={t("Retroceder un paso")}
+              class="ui-btn ui-btn-sm"
+            >
+              ◀
+            </button>
+            <select
+              class="ui-input ui-input-sm"
+              aria-label={t("Paso")}
+              title={t("Las flechas, estos botones y los puntos de corte se mueven con este paso")}
+              value={timeStep}
+              onchange={(event) => setTimeStep((event.currentTarget as HTMLSelectElement).value as TimeStep)}
+            >
+              <option value="frame" disabled={!sourceRate}>{t("Fotograma")}</option>
+              <option value="second">{t("Segundo")}</option>
+              <option value="minute">{t("Minuto")}</option>
+            </select>
+            <button
+              type="button"
+              onclick={() => stepBy(1)}
+              aria-label={t("Avanzar un paso")}
+              title={t("Avanzar un paso")}
+              class="ui-btn ui-btn-sm"
+            >
+              ▶
             </button>
             <span class="ml-auto rounded-md bg-slate-950/70 px-2 py-1 font-mono text-[11px] text-cyan-300">
               {t("Recorte")} {formatMs(effectiveMs)}

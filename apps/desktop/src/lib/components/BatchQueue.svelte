@@ -9,7 +9,7 @@
   import { t } from "../i18n/index.svelte";
   import { compositeProjectMenus } from "../production";
   import { projectStore } from "../stores/project.svelte";
-  import { rememberedContent } from "../utils/encoder";
+  import { rememberedContent, rememberedFilmPulldown } from "../utils/encoder";
   import { nativePath, safeFileName } from "../utils/format";
 
   interface Props {
@@ -125,7 +125,7 @@
           const isoName = `${safeFileName(items[index].name)}.iso`;
           const outcome = await unwrap(
             // Each project keeps the content type chosen for it.
-            commands.renderStart(project, output, "auto", isoName, null, rememberedContent(project.id), channel),
+            commands.renderStart(project, output, "auto", isoName, null, rememberedContent(project.id), rememberedFilmPulldown(project.id), channel),
           );
           items[index] = { ...items[index], status: "done", iso: outcome.isoPath };
         } catch (cause) {

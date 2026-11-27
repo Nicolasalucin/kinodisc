@@ -24,6 +24,14 @@ export function formatDuration(ms: number | null | undefined): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+/** Frames per second as people write them: 23.976, 29.97, 25. */
+export function formatFrameRate(
+  rate: { num: number; den: number } | null | undefined,
+): string {
+  if (!rate || rate.den <= 0 || rate.num <= 0) return "";
+  return String(Math.round((rate.num / rate.den) * 1000) / 1000);
+}
+
 export function basename(path: string): string {
   const parts = path.split(/[\\/]/);
   return parts[parts.length - 1] || path;

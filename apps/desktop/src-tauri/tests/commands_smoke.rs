@@ -147,6 +147,7 @@ async fn render_start_forwards_job_events_and_produces_iso() {
         Some("Smoke disc.iso".to_string()),
         None,
         None,
+        None,
         channel,
     )
     .await

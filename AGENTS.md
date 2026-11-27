@@ -30,7 +30,7 @@ crates/
   kinodisc-subtitle/     Native SRT/ASS/VTT parsing, ab_glyph rasterizer, PGS/SPU
   kinodisc-plan/         Bitrate planning, DVD-9 ECC layer-break sector math
   kinodisc-dvd/          MPEG-2/AC-3 encoding, DVDAuthor XML, IFO patching
-  kinodisc-avchd/        H.264/AC-3 encoding, tsMuxeR metadata, native BDMV muxer
+  kinodisc-avchd/        H.264/AC-3 encoding, native BDMV muxer
   kinodisc-hdmv/         HDMV IG segments, opcodes, native M2TS/MPLS/CLPI/MovieObject
   kinodisc-iso/          DVD-Video ISO builder and BDMV UDF 2.50 builder
   kinodisc-burn/         Platform burners: growisofs/xorriso, camcontrol, IMAPI2, drutil
@@ -110,7 +110,7 @@ The DVD-Video software encode path is tuned deliberately:
 - DC precision uses `-intra_dc_precision 0/1/2` (8/9/10 bits), not deprecated
   `-dc`.
 - Closed GOP is mandatory: `-flags +cgop` and strict `-g 15` (PAL) / `-g 18`
-  (NTSC). FFmpeg rejects closed GOP with scene-cut detection, so the code uses
+  (NTSC; `-g 14` for film with repeat flags, section 24). FFmpeg rejects closed GOP with scene-cut detection, so the code uses
   `-sc_threshold 1000000000`. Do not "restore" `-30000` without revalidating
   FFmpeg.
 - Pass 1 writes to `NUL` on Windows and `/dev/null` on Unix; each `EncodeRequest`
@@ -179,8 +179,8 @@ Smart Render Cache v2:
 - `AudioMastering` (loudnorm/channel mode/codec/passthrough) and per-track gain,
   delay and format must feed one `-af`/`-filter:a:N` chain. Keep mastering
   fields in `audio_params_hash` and bump `ENCODER_REV` when arguments change.
-- AVCHD audio is a vector end to end: FFmpeg per-stream args, tsMuxeR meta,
-  native PMT/MPLS/CLPI and language registration must all agree. Pass-through
+- AVCHD audio is a vector end to end: FFmpeg per-stream args, native
+  PMT/MPLS/CLPI and language registration must all agree. Pass-through
   is only legal for an unfiltered, codec-matching source; otherwise re-encode.
 - Subtitle style is persisted on `SubtitleTrack.style`; native DVD/AVCHD
   rendering must use it rather than a global default.
@@ -235,16 +235,20 @@ Smart Render Cache v2:
 
 - `kinodisc-hdmv::native` emits canonical INDX0200/MOBJ0200/MPLS0200/HDMV0200
   structures; keep its tests and the `kinodisc-verify` integration test green.
-- tsMuxeR is not used (1.3.5, owner's decision). `MuxBackend::Auto` is the
-  native muxer on every host, also when tsMuxeR is installed, and a native
-  failure is an error: nothing is tried again with tsMuxeR. The doctor does
-  not look for it. `KINODISC_MUXER=tsmuxer` asks for it by name: a switch for
-  tests, not a feature. Its files stay the byte reference (section 22).
+- tsMuxeR is not used (1.3.5, owner's decision), and since 1.3.6 no code can
+  run it: the `MuxBackend` choice, the `KINODISC_MUXER` switch, the tsMuxeR
+  runner, its `.meta` writer and its tool entry are gone. Do not bring any of
+  them back. A muxer failure is an error. tsMuxeR's files stay the byte
+  reference (section 22).
+- Direction set by the owner (2026-11-26): FFmpeg is the only external
+  program Kinodisc may depend on. DVDAuthor and spumux are to be replaced by
+  own code (no version assigned yet). The Linux burning tools (`growisofs`,
+  `xorriso`, `dvd+rw-mediainfo`) stay external. Only open-licensed references.
 - Portable discovery checks `KINODISC_TOOLCHAIN_DIR`, `<exe>/toolchain/`,
   `<exe>/bin/` and platform-arch variants before resources and PATH.
-- Native menu clips are encoded to **Matroska** (`menu.mkv`), not raw
-  `.h264`: FFmpeg ≥ 9 refuses to stream-copy timestamp-less H.264 ES into
-  MPEG-TS. tsMuxeR keeps the raw `.h264`. `NativeStream::video_attr` must come
+- Menu clips are encoded to **Matroska** (`menu.mkv`), not raw `.h264`:
+  FFmpeg ≥ 9 refuses to stream-copy timestamp-less H.264 ES into MPEG-TS.
+  `NativeStream::video_attr` must come
   from `AvchdVideoConfig::bdmv_video_attr()` (format << 4 | rate).
 
 ### 12. Frame rates, stream copy and audio reconciliation
@@ -553,8 +557,10 @@ Smart Render Cache v2:
   only sets `-tune` (animation/grain); `aq-mode=3` and an automatic `hqdn3d`
   measured worse and must not come back without new measurements.
 - **DVD Half-D1**: the automatic profile switches below
-  `AUTO_HALF_D1_BELOW_KBPS` (1800, measured); `auto_half_d1_after_ms` is no
-  longer read.
+  `AUTO_HALF_D1_BELOW_KBPS` (1000 since 1.3.6, measured in `cmp-152`; it was
+  1800) and takes full D1 down to `AUTO_D1_MIN_KBPS` (1200, the rate Half-D1
+  was accepted at). `auto_half_d1_after_ms` is no longer read. Do not move
+  either figure without a new measurement.
 - **HD navigation, measured on a PS4** (keep these):
   - index.bdmv has **one title** (title 1 = the whole series). A 21-title
     AVCHD index is "Unknown disc".
@@ -602,6 +608,87 @@ Smart Render Cache v2:
 - `theme.css`: slate-500 is #8a8d95 (dark) / #63676f (light) and the dark
   cyan-500 is #2f6fe0, for 4.5:1 text contrast (white on the accent too);
   muted text uses slate-500, not slate-600.
+
+### 24. Kinodisc 1.3.6 additions
+
+- **Universal compatibility comes first** (owner, 2026-11-27). A disc must
+  stay inside its standard so that any player of that standard plays it.
+  The television system (NTSC or PAL) is the user's choice and is never
+  changed by the app. "Keep the video's frames" works only inside what the
+  standard allows (on an NTSC DVD: 24 stored with repeat flags, everything
+  else at 29.97). Anything outside a standard (a 2 or 3 second GOP on
+  Blu-ray) is opt-in, off by default, and says so.
+- **Film repeat flags** (`kinodisc-dvd::pulldown`, own code written from
+  ISO/IEC 13818-2; FFmpeg's encoder does not write them). With
+  `VideoEncodeConfig::film_pulldown` the NTSC line encodes at 24000/1001
+  (`fps=24000/1001`, `-g 14`: 14 film pictures last 35 fields, 15 would
+  pass the 36-field limit; with 2 B-frames FFmpeg makes GOPs of 13), and
+  `apply_soft_pulldown` rewrites the `.m2v` before the mux: `frame_rate_code`
+  1 to 4, `progressive_sequence` 0, `top_field_first`/`repeat_first_field` in
+  the 3:2 cadence by DISPLAY order (temporal reference, unbroken across
+  GOPs), GOP time codes at 30 pictures per second. Only fixed header bits
+  change: the file keeps its size. It refuses anything that is not
+  progressive frame pictures in closed GOPs at code 1, and a GOP over 36
+  fields.
+- **Buffer margin of the film line** (`rate_control_buffer_bits`). FFmpeg's
+  rate control takes one picture out of the VBV every 1/23.976 s; with the
+  flags a player takes them out after 3 and 2 fields in turn (ISO/IEC
+  13818-2 annex C.11: a B-frame by its own `repeat_first_field`, an I- or
+  P-frame by the flag of the anchor before it; the first interval of a
+  sequence may be 2 or 3 fields). A picture can so leave up to a field
+  earlier than the encoder counted on. The film line passes `-bufsize` two
+  fields of `-maxrate` under 1,835,008 bits, rounded down to 16384 (9800
+  kb/s: 1,507,328), and `apply_soft_pulldown` sets `vbv_buffer_size_value`
+  back to 112 when the header declares less. Do not remove the margin
+  without a buffer simulation by the annex C.11 times on a title that runs
+  at the peak rate (QA `rel-150`, F-267: a 60 s film at 9788 kb/s emptied
+  the buffer in the QA's model without it). The verifier does not simulate
+  the VBV.
+- The option is `RenderOptions::film_pulldown` (CLI `--no-film-pulldown`
+  turns it off; a list in the production window ("Imágenes por segundo"), remembered per project
+  in the browser store). **On by default by the owner's decision
+  (2026-11-27, "for now"); no player has been tested.** If a player fails on
+  these discs, the default goes back to off. It applies per
+  episode, only to a progressive source at 23.9 to 24.1 pictures per second
+  on an NTSC disc (`is_film_source`); such an episode adds `:film24` to its
+  cache key. The quality sample does not use it.
+- `first_pass_percent_of` takes the coded rate (`coded_rate()`), not the
+  television standard: a film pass counts 23.976 pictures to the second.
+- **Verifier** (`kinodisc-verify::dvd_video`, shares no code with the
+  writer): reads the video of every title VOB (32 MB per title set, all of
+  it with `--deep`). `DVD-VIDEO-RATE` fails on a `frame_rate_code` other than
+  3 or 4; `DVD-VIDEO-GOP` warns over 36 fields (NTSC) or 30 (PAL);
+  `DVD-VIDEO-CADENCE` warns when a picture starts on the parity the last one
+  ended on. A GOP time code that does not go forward starts another title:
+  parity is not carried over it. A progressive sequence has no fields to
+  follow. A sequence header closes the GOP before it (the next title's
+  sequence extension must not be read into the last GOP of a film), and the
+  GOP that the 32 MB limit cuts is left out (`finish_cut`), or every flagged
+  disc over 32 MB gets a false parity warning.
+- **A trim must leave half a second of video.** The editor refuses a trim
+  start within 500 ms of the end (`setEpisodeTrimStart`), and the render
+  checks it before encoding (`ensure_trims_leave_video`, error `Trim`, on
+  the DVD and the AVCHD/Blu-ray paths), naming the episode: a project file
+  written by an older version or by hand can hold such a trim.
+- **Timeline steps** (`utils/timeline.ts`): a frame is named by its start
+  rounded DOWN to the millisecond, because the encoders cut with `-ss <ms>`
+  and keep the first picture not before it; rounding up starts one picture
+  late. The `<video>` is sought to the middle of the picture. "Mark start"
+  keeps the picture on screen as the first, "Mark end" as the last.
+- **Production window, simple and advanced** (owner, 2026-11-27: the simple
+  mode means more minutes on the same disc at the same quality). The simple
+  choice is "Compresión": Normal (`auto`) or Máxima (`cpuSlowest`),
+  remembered in `kinodisc_compression`; any other encoder picked in the
+  list shows as "Personalizada". The encoder list, GOP and full first pass
+  sit behind "Opciones avanzadas" (`kinodisc_production_advanced`). The film
+  option is always in view on an NTSC DVD and lists the frame rates of the
+  disc's videos (owner, 2026-11-27: the user must see how many frames each
+  video has); the media list shows each video's rate too.
+  An option goes into either mode only with a measured saving beside it.
+- x264 `veryslow` is `EncoderPreference::CpuSlowest` (`cpu-veryslow`). The
+  figures in the encoder list are measured ones (`cmp-150`); change them only
+  with a new measurement. A third or fourth pass is not offered (measured: no
+  gain; owner's decision).
 
 ### 13. Localization
 

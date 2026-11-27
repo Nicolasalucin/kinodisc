@@ -1039,6 +1039,12 @@ class ProjectStore {
     return this.assetFor(episode.video)?.probe.durationMs ?? 0;
   }
 
+  /** Frame rate of the episode's source video, when the probe has one. */
+  episodeSourceFrameRate(episode: Episode_Serialize): FrameRate | null {
+    const rate = this.assetFor(episode.video)?.probe.video?.frameRate;
+    return rate && rate.num > 0 && rate.den > 0 ? rate : null;
+  }
+
   episodeEffectiveDuration(episode: Episode_Serialize): number {
     const source = this.episodeSourceDuration(episode);
     const start = episode.trimStartMs ?? 0;
@@ -1760,6 +1766,14 @@ class ProjectStore {
     const start = ms === null ? null : Math.max(0, Math.min(duration, Math.round(ms)));
     if (start !== null && episode.trimEndMs !== null && start >= episode.trimEndMs) {
       this.error = t("El inicio del recorte debe ser anterior al fin.");
+      return false;
+    }
+    // The half second the end already has to keep from the start. A video
+    // file is often a little longer than its pictures, so a start on its
+    // last instants would leave nothing to encode.
+    const end = episode.trimEndMs ?? duration;
+    if (start !== null && start > 0 && start > end - 500) {
+      this.error = t("El fin del recorte debe ser al menos 0,5 s posterior al inicio.");
       return false;
     }
     episode.trimStartMs = start;

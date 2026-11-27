@@ -13,7 +13,7 @@ struct Cell {
     end: u64,
 }
 
-pub(crate) fn verify(reader: &UdfReader<'_>, size: u64, checks: &mut CheckList) {
+pub(crate) fn verify(reader: &UdfReader<'_>, size: u64, deep: bool, checks: &mut CheckList) {
     check_ifo_bup(reader, checks);
     check_vts_ifo(reader, checks);
     let cells = check_pgc(reader, size, checks);
@@ -22,6 +22,7 @@ pub(crate) fn verify(reader: &UdfReader<'_>, size: u64, checks: &mut CheckList) 
     check_vob(reader, checks);
     check_spu_packets(reader, checks);
     check_audio_packets(reader, checks);
+    crate::dvd_video::check(reader, deep, checks);
     crate::menu::check_dvd_spu_buttons(reader, checks);
 }
 

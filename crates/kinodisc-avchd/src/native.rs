@@ -1,6 +1,6 @@
 //! Native Rust + FFmpeg BDMV authoring: the muxer Kinodisc uses.
 //!
-//! It runs on every host, also when tsMuxeR is installed (1.3.5). It
+//! It is the only muxer (tsMuxeR is not used: since 1.3.6 no code runs it). It
 //! writes the movie M2TS directly with FFmpeg (copying H.264, AC-3 and PGS) and
 //! builds the BDMV navigation files with the pure builders in `kinodisc-hdmv`.
 //! Menus reuse the native IG packets but are muxed through the same FFmpeg path.
@@ -23,50 +23,6 @@ use kinodisc_hdmv::{
 };
 use std::fs;
 use std::path::{Path, PathBuf};
-
-/// How the AVCHD/BDMV folder is multiplexed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MuxBackend {
-    Auto,
-    Native,
-    TsMuxer,
-}
-
-impl MuxBackend {
-    /// `Auto` is the built-in muxer on every host, also when tsMuxeR is
-    /// installed (until 1.3.4 a 64-bit host with tsMuxeR used tsMuxeR).
-    /// tsMuxeR runs only when it is asked for by name.
-    pub fn select(self) -> Self {
-        match self {
-            Self::Auto => Self::Native,
-            other => other,
-        }
-    }
-
-    /// Resolves `Auto`. `KINODISC_MUXER=tsmuxer` asks for tsMuxeR by name:
-    /// a switch for tests, not a feature.
-    pub fn resolve(self) -> Self {
-        let requested = match kinodisc_toolchain::legacy::env_var("KINODISC_MUXER")
-            .ok_or(())
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "native" => Self::Native,
-            "tsmuxer" => Self::TsMuxer,
-            _ => self,
-        };
-        requested.select()
-    }
-}
-
-/// Whether a usable tsMuxeR executable is available on this host.
-pub fn tsmuxer_is_available() -> bool {
-    ["tsMuxeR", "tsmuxer"].iter().any(|name| {
-        let path = kinodisc_toolchain::resolve_binary(name);
-        path.components().count() > 1 && path.is_file()
-    })
-}
 
 #[derive(Debug, Clone)]
 pub struct NativeMovieSubtitle<'a> {
@@ -612,16 +568,4 @@ fn resolve_menu_streams(
                 .with_video_aspect(video_aspect)
         })
         .collect())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn auto_is_the_built_in_muxer_whatever_is_installed() {
-        assert_eq!(MuxBackend::Auto.select(), MuxBackend::Native);
-        assert_eq!(MuxBackend::Native.select(), MuxBackend::Native);
-        assert_eq!(MuxBackend::TsMuxer.select(), MuxBackend::TsMuxer);
-    }
 }

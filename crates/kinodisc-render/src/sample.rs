@@ -397,6 +397,7 @@ async fn encode(
                 scale_mode: episode.scale_mode,
                 pre_filter: pre.clone(),
                 full_first_pass: crate::full_first_pass(project),
+                film_pulldown: false,
             };
             let scale = kinodisc_dvd::build_scale_filter(&video);
             let request = kinodisc_dvd::EncodeRequest {

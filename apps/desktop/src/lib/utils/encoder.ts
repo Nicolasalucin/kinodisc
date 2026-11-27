@@ -16,6 +16,7 @@ export type EncoderChoice =
   | "cpuOnly"
   | "cpuSlow"
   | "cpuSlower"
+  | "cpuSlowest"
   | `hw:${HardwareEncoder}`;
 
 export const HARDWARE_LABELS: Record<HardwareEncoder, string> = {
@@ -77,6 +78,37 @@ export function recommendedEncoder(
  * encoder. Remembered per project on this computer; the quality sample and
  * the disc use the same value.
  */
+/**
+ * NTSC DVD: store 24 fps film as 24 pictures with repeat flags. On unless
+ * the user turned it off for this project on this computer.
+ */
+function filmKey(projectId: string | null | undefined): string {
+  return `kinodisc_film24_${projectId ?? ""}`;
+}
+
+export function rememberedFilmPulldown(
+  projectId: string | null | undefined,
+): boolean {
+  try {
+    return localStorage.getItem(filmKey(projectId)) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+export function rememberFilmPulldown(
+  projectId: string | null | undefined,
+  value: boolean,
+): void {
+  try {
+    // Only the non-default choice is kept.
+    if (value) localStorage.removeItem(filmKey(projectId));
+    else localStorage.setItem(filmKey(projectId), "0");
+  } catch {
+    // Not remembered this time.
+  }
+}
+
 function contentKey(projectId: string | null | undefined): string {
   return `kinodisc_content_${projectId ?? ""}`;
 }

@@ -25,6 +25,9 @@ pub(crate) struct RenderArgs {
     pub(crate) cpu: CpuUsage,
     /// What the videos are, to tune the encoders.
     pub(crate) content: ContentType,
+    /// NTSC DVD: 24 fps film stored as 24 pictures with repeat flags
+    /// (on unless `--no-film-pulldown`).
+    pub(crate) film_pulldown: bool,
 }
 
 /// `--content` values: `film` (default), `animation` or `grain`.
@@ -48,7 +51,7 @@ pub(crate) fn parse_cpu(value: &str) -> Option<CpuUsage> {
 }
 
 /// `--encoder` values: `auto`, `cpu-fast`, `cpu-medium`, `cpu-slow`,
-/// `cpu-slower`, or a
+/// `cpu-slower`, `cpu-veryslow`, or a
 /// hardware encoder (`nvenc`, `qsv`, `amf`, `vaapi`, `videotoolbox`).
 pub(crate) fn parse_encoder(value: &str) -> Option<EncoderPreference> {
     use kinodisc_toolchain::HardwareEncoder;
@@ -58,6 +61,7 @@ pub(crate) fn parse_encoder(value: &str) -> Option<EncoderPreference> {
         "cpu" | "cpu-medium" | "medium" => EncoderPreference::CpuOnly,
         "cpu-slow" | "slow" => EncoderPreference::CpuSlow,
         "cpu-slower" | "slower" => EncoderPreference::CpuSlower,
+        "cpu-veryslow" | "veryslow" => EncoderPreference::CpuSlowest,
         "nvenc" => EncoderPreference::Prefer(HardwareEncoder::NvencH264),
         "qsv" => EncoderPreference::Prefer(HardwareEncoder::QsvH264),
         "amf" => EncoderPreference::Prefer(HardwareEncoder::AmfH264),
@@ -198,9 +202,9 @@ pub(crate) async fn render(args: &RenderArgs) -> Result<PathBuf, String> {
             composited_backgrounds: None,
             cancel: Some(Arc::clone(&cancel)),
             hardware_encoding: args.encoder,
-            mux_backend: kinodisc_render::MuxBackend::Auto,
             cpu_usage: args.cpu,
             content: args.content,
+            film_pulldown: args.film_pulldown,
         },
         sender,
     ));
@@ -274,6 +278,7 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
     let mut encoder = EncoderPreference::Auto;
     let mut cpu = CpuUsage::default();
     let mut content = ContentType::default();
+    let mut film_pulldown = true;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -285,6 +290,8 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
                 output = PathBuf::from(value);
             }
             "--no-probe" => no_probe = true,
+            "--film-pulldown" => film_pulldown = true,
+            "--no-film-pulldown" => film_pulldown = false,
             "--folder" | "--avchd-folder" => avchd_folder = true,
             "--encoder" => {
                 index += 1;
@@ -293,7 +300,7 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
                 };
                 encoder = parse_encoder(value).ok_or_else(|| {
                     format!(
-                        "Codificador desconocido: {value}. Usa auto, cpu-fast, cpu-medium, cpu-slow, cpu-slower, nvenc, qsv, amf, vaapi o videotoolbox."
+                        "Codificador desconocido: {value}. Usa auto, cpu-fast, cpu-medium, cpu-slow, cpu-slower, cpu-veryslow, nvenc, qsv, amf, vaapi o videotoolbox."
                     )
                 })?;
             }
@@ -342,7 +349,7 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
     }
     Ok(RenderArgs {
         project: project.ok_or_else(|| {
-            "Uso: kinodisc-cli render <project.json> [-o <dir>] [--mode dvd|avchd] [--encoder <tipo>] [--cpu <uso>] [--content film|animation|grain] [--folder] [--no-probe]"
+            "Uso: kinodisc-cli render <project.json> [-o <dir>] [--mode dvd|avchd] [--encoder <tipo>] [--cpu <uso>] [--content film|animation|grain] [--no-film-pulldown] [--folder] [--no-probe]"
                 .to_string()
         })?,
         output,
@@ -352,6 +359,7 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
         encoder,
         cpu,
         content,
+        film_pulldown,
     })
 }
 
@@ -383,6 +391,10 @@ mod tests {
         assert_eq!(
             parse(&["--encoder", "CPU-MEDIUM"]).unwrap().encoder,
             EncoderPreference::CpuOnly
+        );
+        assert_eq!(
+            parse(&["--encoder", "cpu-veryslow"]).unwrap().encoder,
+            EncoderPreference::CpuSlowest
         );
         assert_eq!(
             parse(&["--encoder", "amf"]).unwrap().encoder,

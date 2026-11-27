@@ -112,7 +112,7 @@
         if (item !== content) options.push({ kind: "content", content: item });
       }
       const current = recommendedEncoder(project, kbps);
-      for (const encoder of ["cpuFast", "cpuOnly", "cpuSlow", "cpuSlower"] as const) {
+      for (const encoder of ["cpuFast", "cpuOnly", "cpuSlow", "cpuSlower", "cpuSlowest"] as const) {
         if (encoder !== current) options.push({ kind: "preset", encoder });
       }
       const gop = video.gopSeconds ?? 1;
@@ -180,7 +180,9 @@
             ? t("CPU medio (x264 medium)")
             : option.encoder === "cpuSlow"
               ? t("CPU lento (x264 slow)")
-              : t("CPU máximo (x264 slower)");
+              : option.encoder === "cpuSlower"
+                ? t("CPU muy lento (x264 slower)")
+                : t("CPU máximo (x264 veryslow)");
       case "gop":
         return t("GOP de {seconds} s", { seconds: option.seconds });
     }

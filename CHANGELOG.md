@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.3.6 nightly — 2026-11-27
+
+**Nightly build**: new and not fully tested. No DVD or Blu-ray player has played these discs.
+
+### Added
+
+- **The app shows the frames per second of each video**: in the media list, next to the picture size, and in the production window of an NTSC DVD, where the film option says how many of the disc's videos run at each rate and whether it applies to them.
+- **One simple choice in the production window, and the details behind "Advanced options".** For AVCHD and Blu-ray, "Compression" is Normal or Maximum. Maximum uses the slowest CPU setting of the encoder, so that more minutes fit on the same disc at the same quality: on four one-minute excerpts it needed 4 to 7 % fewer bits than the medium setting, in 2 to 2.7 times the time. The choice is remembered. The encoder list, the GOP length and the full first pass of DVD are now under "Advanced options".
+- **A 24-picture film on an NTSC DVD is stored as 24 pictures** (list "Pictures per second" in the production window: "Keep the video's when the DVD allows it", the default, or "Always 29.97"; `--no-film-pulldown` in the CLI). Until now such a film was recorded at 29.97 pictures per second by encoding one picture in five twice. With the option the disc holds the film's own pictures and tells the player which fields to repeat, as film DVDs do. On four one-minute excerpts (Big Buck Bunny and Tears of Steel, one encode per setting) the same VMAF NEG score needed 3 to 7 % fewer bits; the repeated pictures had been taking 17 to 19 % of the bytes. Those figures were measured before one later change: the film is now encoded leaving two fields' worth of the DVD's buffer free (327 kbit of 1835 at the top rate of 9800 kb/s), because the repeated fields move the moment each picture leaves the player's buffer; the cost of that margin was not measured. **No player has played these discs yet**: if yours does not play them well, choose "Always 29.97" and tell us. It applies only to progressive videos at 23.976 or 24 pictures per second; the other videos of the disc are made as before.
+- **The verifier reads the video of a DVD**: pictures per second, the length of the groups of pictures in fields, and whether the field order is unbroken (three new checks, `DVD-VIDEO-RATE`, `DVD-VIDEO-GOP` and `DVD-VIDEO-CADENCE`). Without `--deep` it reads the first 32 MB of each title set, and leaves out the group of pictures that limit cuts.
+- **The trim timeline moves by frame, second or minute.** A list next to "Mark start" and "Mark end" chooses the step; the arrow keys, two new buttons and the cut points when you drag them move by it. The time above the timeline also shows the frame number. "Mark start" now keeps the picture on screen as the first one of the cut, and "Mark end" keeps it as the last one: until now the cut could begin one picture after the one shown. Frames follow the frame rate the file declares; a file with a variable frame rate was not tried.
+- **A slower encoding choice for AVCHD and Blu-ray: "CPU maximum (x264 veryslow)".** On two one-minute excerpts (Big Buck Bunny and Tears of Steel, 720p sources enlarged to 1080p, one encode per setting) it needed 8 to 12 % fewer bits than "CPU fast" for the same VMAF NEG score, and took 2.2 to 2.7 times as long (averaged over the bitrates tried; 3.1 times at 6000 kb/s on one of the two). On 1080p at 23.976 pictures per second the stream kept the limits of the disc (a key frame every second, 4 slices, level 4.1). Other picture sizes were not measured. In the CLI: `--encoder cpu-veryslow`. The choice that was called "CPU maximum" (x264 slower) is now "CPU very slow".
+
+### Fixed
+
+- The Bitrate panel said "2-pass: No" for every AVCHD and Blu-ray project. The CPU encoder uses two passes there; a graphics-card encoder uses one. The panel now says that.
+- The start of a trim could be set on the last instants of a video, which left nothing to encode. The editor now asks for at least half a second between the start and the end, as it already did when the end was moved. A project that already holds such a trim stops before encoding, with a message that names the episode; it used to fail after encoding with an error that did not.
+- The encoder list of the production window gave savings that had not been measured ("~10 % fewer bits, ~1.5× the time" for x264 slower). It now gives the measured ones, from the same two excerpts: medium needs 2 to 4 % fewer bits than fast in the same time; slower needs 6 to 10 % fewer in about 1.7 times the time.
+
+### Changed
+
+- **Long DVDs keep the full picture width.** With the automatic profile, a disc whose video rate fell under 1800 kb/s (more than about 5 hours on a 4.7 GB disc) was made at half width (352 pixels). Measured again with the current encoder, on four one-minute excerpts and one with added grain (NTSC 16:9, VMAF NEG after bringing the half picture back to full width): between 1200 and 1800 kb/s the full width scored 0.86 to 5.3 points higher on four of the five and 0.58 to 2.3 higher from 1400 kb/s on the fifth, which at 1200 kb/s was 0.15 to 0.72 lower (each range covers the two ways tried of bringing the half picture back to full width, bicubic and lanczos). The automatic profile now keeps the full width down to 1200 kb/s, the lowest rate it accepted before. The same discs are accepted and refused as before; half width can still be chosen by hand. PAL was measured on one excerpt at two rates only, with the same result.
+- **Kinodisc can no longer run tsMuxeR.** 1.3.5 stopped using it but kept a hidden test switch (`KINODISC_MUXER=tsmuxer`); with that switch set and no tsMuxeR on the PC, a render failed after encoding. The switch and the code behind it are gone, and the work folder no longer gets an `avchd.meta` file.
+
 ## 1.3.5 nightly — 2026-11-25
 
 **Nightly build**: new and not fully tested. No DVD or Blu-ray player has played these discs.

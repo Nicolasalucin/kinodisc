@@ -768,9 +768,15 @@ fn print_help() {
         "  kinodisc-cli chapters <project.json> --scenes [--sensitivity 0..1] [-o <salida.json>]   (capítulos en los cambios de escena)"
     );
     println!("  kinodisc-cli split <project.json> [--per-episode]   (un proyecto por disco)");
-    println!("  kinodisc-cli render <project.json> [-o <dir>] [--mode dvd|avchd] [--encoder <tipo>] [--cpu <uso>] [--folder] [--no-probe]");
+    println!("  kinodisc-cli render <project.json> [-o <dir>] [--mode dvd|avchd] [--encoder <tipo>] [--cpu <uso>] [--no-film-pulldown] [--folder] [--no-probe]");
+    println!(
+        "      --no-film-pulldown  DVD NTSC: no guarda las películas de 24 imágenes como 24 con marcas de repetición"
+    );
+    println!(
+        "                (por defecto sí: menos bits a igual calidad; sin probar en reproductores)."
+    );
     println!("      --folder  también escribe <dir>/disc con VIDEO_TS o BDMV (idéntico al ISO)");
-    println!("      --encoder auto|cpu-fast|cpu-medium|cpu-slow|cpu-slower|nvenc|qsv|amf|vaapi|videotoolbox");
+    println!("      --encoder auto|cpu-fast|cpu-medium|cpu-slow|cpu-slower|cpu-veryslow|nvenc|qsv|amf|vaapi|videotoolbox");
     println!("                H.264 para AVCHD/Blu-ray (auto: hardware si hay, si no cpu-medium).");
     println!("                El tamaño del disco no cambia: cambian la calidad y el tiempo.");
     println!("      --cpu background|balanced|full");

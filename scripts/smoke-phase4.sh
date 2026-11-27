@@ -68,15 +68,8 @@ done
 echo "Estructura AVCHD OK: index.bdmv, MovieObject.bdmv, PLAYLIST, CLIPINF y STREAM."
 
 echo
-echo "== Capítulos inyectados en el metafile =="
-META="$OUT/meta/avchd.meta"
-grep -q -- '--custom-chapters=' "$META"
-CHAPTER_COUNT=$(( $(grep -o ';' "$META" | wc -l) + 1 ))
-if [[ $CHAPTER_COUNT -lt 2 ]]; then
-    echo "Se esperaban al menos dos capítulos; encontrados: $CHAPTER_COUNT" >&2
-    exit 1
-fi
-echo "Capítulos AVCHD: $CHAPTER_COUNT."
+echo "== Verificación del disco (estructura, marcas de capítulo, flujos) =="
+cargo run -q -p kinodisc-cli -- verify "$ISO" --deep --strict
 
 echo
 echo "== Perfil H.264 del stream AVCHD =="

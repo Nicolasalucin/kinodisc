@@ -9,7 +9,7 @@
   import { commands } from "../api/bindings";
   import { messageOf, unwrap } from "../api/client";
   import { projectStore, type LayoutKind } from "../stores/project.svelte";
-  import { basename, formatBytes, formatDuration } from "../utils/format";
+  import { basename, formatBytes, formatDuration, formatFrameRate } from "../utils/format";
   import { ui } from "../ui/state.svelte";
 
   let search = $state("");
@@ -286,7 +286,8 @@
 
   function assetMeta(asset: MediaAsset_Serialize): string {
     if (asset.probe.video) {
-      return `${asset.probe.video.width}×${asset.probe.video.height} · ${formatDuration(asset.probe.durationMs)}`;
+      const fps = formatFrameRate(asset.probe.video.frameRate);
+      return `${asset.probe.video.width}×${asset.probe.video.height}${fps ? ` · ${fps} fps` : ""} · ${formatDuration(asset.probe.durationMs)}`;
     }
     if (asset.probe.audio.length > 0) {
       const audio = asset.probe.audio[0];

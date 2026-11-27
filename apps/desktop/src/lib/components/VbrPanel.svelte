@@ -435,7 +435,7 @@
           </div>
           <div class="flex justify-between gap-2">
             <dt class="text-slate-500">{t("2 pasadas")}</dt>
-            <dd class="text-emerald-300">{isAvchd ? t("No") : dvdVideo?.twoPass ? t("Sí") : t("No")}</dd>
+            <dd class="text-emerald-300">{isAvchd ? t("Sí con CPU; una con GPU") : dvdVideo?.twoPass ? t("Sí") : t("No")}</dd>
           </div>
           <div class="flex justify-between gap-2">
             <dt class="text-slate-500">{t("Primera pasada")}</dt>

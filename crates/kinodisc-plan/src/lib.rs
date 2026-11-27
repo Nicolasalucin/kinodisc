@@ -26,12 +26,18 @@ const MENU_OVERHEAD_BYTES: u64 = 2_000_000;
 const INTRO_OVERHEAD_BYTES: u64 = 1_000_000;
 const IFO_BYTES: u64 = 2 * 1024 * 1024;
 const D1_MIN_KBPS: u32 = 2_500;
-/// Below this the automatic profile picks Half-D1. Measured in 1.3 (two-pass
-/// MPEG-2, SSIM after upscaling, NTSC and PAL): on film Half-D1 wins below
-/// about 1.8 Mb/s (0.17 bits per pixel) and loses above it. On animation D1
-/// won at every bitrate tested, but the plan cannot tell the two apart.
-const AUTO_HALF_D1_BELOW_KBPS: u32 = 1_800;
+/// Below this the automatic profile picks Half-D1. Measured on the 1.3.5
+/// line (QA `cmp-152`: NTSC 16:9, four film and animation excerpts and one
+/// with added grain, VMAF NEG after upscaling the half picture): Half-D1 is
+/// better below 870 to 980 kb/s on three excerpts, 990 to 1070 with grain
+/// and 1220 to 1310 on one; above that full D1 is 1 to 5 points ahead up to
+/// 1800 kb/s, where 1.3 switched (an SSIM measurement of an older line).
+const AUTO_HALF_D1_BELOW_KBPS: u32 = 1_000;
 const HALF_D1_MIN_KBPS: u32 = 1_200;
+/// The lowest rate the automatic profile accepts for full D1: the rate
+/// Half-D1 was already accepted at, so no disc that was refused before is
+/// made now, and none that was made is refused.
+const AUTO_D1_MIN_KBPS: u32 = HALF_D1_MIN_KBPS;
 const DVD_MAX_TOTAL_KBPS: u32 = 10_080;
 
 #[derive(Debug, thiserror::Error)]
@@ -285,7 +291,7 @@ fn calculate_plan_for_format(
         DvdProfile::HalfD1 => HALF_D1_MIN_KBPS,
         // D1 chosen by the automatic profile is better than Half-D1 down to
         // the switch point, whatever the budget's minimum says.
-        DvdProfile::D1 if requested_profile == DvdProfile::Auto => AUTO_HALF_D1_BELOW_KBPS,
+        DvdProfile::D1 if requested_profile == DvdProfile::Auto => AUTO_D1_MIN_KBPS,
         DvdProfile::D1 | DvdProfile::Auto => policy.min_video_kbps.max(D1_MIN_KBPS),
     };
     let max_video_kbps = policy.max_video_kbps.max(1);
@@ -965,17 +971,29 @@ mod tests {
         let plan = calculate_bitrate_plan(&project, &HashMap::new()).expect("plan");
         assert!(plan.feasible, "{:?}", plan.warnings);
         assert_eq!(plan.profile, DvdProfile::D1);
-        assert!(plan.video_kbps >= AUTO_HALF_D1_BELOW_KBPS);
+        assert!(plan.video_kbps >= 1_800);
         assert!(!plan
             .warnings
             .iter()
             .any(|warning| warning.code == "W_HALF_D1_AUTO"));
-        // Six hours fall below the switch point.
+        // Six hours leave about 1.5 Mb/s: until 1.3.5 that was Half-D1;
+        // full D1 measured 2 to 5 points better there (QA `cmp-152`).
         set_duration(&mut project, 21_600_000);
         let plan = calculate_bitrate_plan(&project, &HashMap::new()).expect("plan");
         assert!(plan.feasible, "{:?}", plan.warnings);
+        assert_eq!(plan.profile, DvdProfile::D1);
+        assert!(plan.video_kbps > AUTO_D1_MIN_KBPS && plan.video_kbps < 1_800);
+        assert!(!plan
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "W_HALF_D1_AUTO"));
+        // Ten hours fall below the switch point: Half-D1, and under the
+        // rate it is accepted at, so the plan is refused as before.
+        set_duration(&mut project, 36_000_000);
+        let plan = calculate_bitrate_plan(&project, &HashMap::new()).expect("plan");
         assert_eq!(plan.profile, DvdProfile::HalfD1);
-        assert!(plan.video_kbps > 1_200 && plan.video_kbps < AUTO_HALF_D1_BELOW_KBPS);
+        assert!(plan.video_kbps < AUTO_HALF_D1_BELOW_KBPS);
+        assert!(!plan.feasible);
         assert!(plan
             .warnings
             .iter()

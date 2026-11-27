@@ -278,6 +278,7 @@ fn publish_iso(work_iso: &Path, output: &Path, name: &Path) -> std::io::Result<P
 
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)]
 pub async fn render_start(
     project: Project,
     output_dir: String,
@@ -285,6 +286,7 @@ pub async fn render_start(
     iso_name: Option<String>,
     cpu_usage: Option<kinodisc_toolchain::CpuUsage>,
     content: Option<kinodisc_toolchain::ContentType>,
+    film_pulldown: Option<bool>,
     channel: Channel<JobEvent>,
 ) -> Result<RenderOutcome, String> {
     let job_id = JobId::new();
@@ -346,6 +348,7 @@ pub async fn render_start(
                 hardware_encoding,
                 cpu_usage: cpu_usage.unwrap_or_default(),
                 content: content.unwrap_or_default(),
+                film_pulldown: film_pulldown.unwrap_or(true),
                 ..RenderOptions::default()
             },
             sender,
@@ -555,7 +558,8 @@ fn encoder_label(encoder: EncoderPreference) -> String {
         EncoderPreference::CpuFast => "CPU rápido (x264 fast)".to_string(),
         EncoderPreference::CpuOnly => "CPU medio (x264 medium)".to_string(),
         EncoderPreference::CpuSlow => "CPU lento (x264 slow)".to_string(),
-        EncoderPreference::CpuSlower => "CPU máximo (x264 slower)".to_string(),
+        EncoderPreference::CpuSlower => "CPU muy lento (x264 slower)".to_string(),
+        EncoderPreference::CpuSlowest => "CPU máximo (x264 veryslow)".to_string(),
         EncoderPreference::Prefer(hardware) => format!("GPU {hardware:?}"),
     }
 }

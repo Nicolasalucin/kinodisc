@@ -11,8 +11,8 @@ use kinodisc_avchd::native::{
     finish_avchd_tree, NativeBdmvMuxer, NativeMenuRequest, NativeMovieRequest, NativeMovieSubtitle,
 };
 use kinodisc_avchd::{
-    concat_mkv, write_meta, AvchdAudioConfig, AvchdEncodeRequest, AvchdEncoder, AvchdMetaRequest,
-    AvchdMetaSubtitle, AvchdOutputs, AvchdSubtitleConfig, TsMuxer,
+    concat_mkv, AvchdAudioConfig, AvchdEncodeRequest, AvchdEncoder, AvchdOutputs,
+    AvchdSubtitleConfig,
 };
 use kinodisc_domain::{
     normalize_rect, AspectRatio, AssetId, AssetSource, AuthoringMode, ButtonAction, ButtonId,
@@ -27,10 +27,9 @@ use kinodisc_dvd::{
     RenderedMenu, VideoEncodeConfig,
 };
 use kinodisc_hdmv::{
-    append_menu_movie_object, compile_ig_pes_packets, disable_subtitle_stream, dummy_pgs_for_slots,
-    frame_rate_code, jump_object, jump_title, m2ts_from_pes_packets, movie_object_count,
-    patch_menu_clpi, patch_menu_mpls, pes_transport_packet_count, set_gpr, set_index_menu_object,
-    set_subtitle_stream, HdmvButton, HdmvButtonState, HdmvCommand, HdmvMenu, RgbaBitmap,
+    compile_ig_pes_packets, disable_subtitle_stream, frame_rate_code, jump_object, jump_title,
+    m2ts_from_pes_packets, set_gpr, set_subtitle_stream, HdmvButton, HdmvButtonState, HdmvCommand,
+    HdmvMenu, RgbaBitmap,
 };
 use kinodisc_iso::{BdmvIsoBuilder, Xorriso};
 use kinodisc_jobs::{ArtifactKind, JobEventKind, JobStage};
@@ -58,7 +57,6 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 pub const CRATE_NAME: &str = "kinodisc-render";
-pub use kinodisc_avchd::native::MuxBackend;
 pub type EventSink = mpsc::Sender<JobEventKind>;
 
 /// tsMuxeR/BDAV timelines start at 600 seconds. Menu IG packets are aligned to
@@ -132,6 +130,9 @@ pub enum RenderError {
     /// A file the disc is made from is not where the project says.
     #[error("falta un archivo de origen: {0}")]
     MissingSource(String),
+    /// The trim of an episode leaves no video to encode.
+    #[error("el recorte no deja vídeo: {0}")]
+    Trim(String),
     #[error("el plan de bitrate no es viable: {0}")]
     Plan(String),
     #[error("error de codificación: {0}")]
@@ -163,15 +164,17 @@ pub struct RenderOptions {
     /// Hardware encoder preference for AVCHD/Blu-ray H.264. DVD-Video always
     /// stays on the CPU MPEG-2 path.
     pub hardware_encoding: EncoderPreference,
-    /// BDMV muxing backend. `Auto` is the native muxer on every host, also
-    /// when tsMuxeR is installed (1.3.5).
-    pub mux_backend: MuxBackend,
     /// How much of the processor the encoders may take (episodes at a time,
     /// threads, priority). Never changes the disc.
     pub cpu_usage: CpuUsage,
     /// What the videos are (film, animation, grainy video), to tune the
     /// encoders. Part of the episode cache key.
     pub content: kinodisc_toolchain::ContentType,
+    /// NTSC DVD: store progressive 23.976/24 fps sources as film pictures
+    /// with 3:2 repeat flags instead of repeating one picture in five.
+    /// On by default (owner's decision, 1.3.6); no player has been tested
+    /// with these discs yet.
+    pub film_pulldown: bool,
 }
 
 impl Default for RenderOptions {
@@ -181,9 +184,9 @@ impl Default for RenderOptions {
             composited_backgrounds: None,
             cancel: None,
             hardware_encoding: EncoderPreference::Auto,
-            mux_backend: MuxBackend::Auto,
             cpu_usage: CpuUsage::default(),
             content: kinodisc_toolchain::ContentType::default(),
+            film_pulldown: true,
         }
     }
 }
@@ -332,6 +335,7 @@ async fn render_dvd_project(
     let probes = probe_report.probes;
     let mut warnings = probe_report.warnings;
     ensure_sources_exist(&project, &project_dir)?;
+    ensure_trims_leave_video(&project, &probes)?;
     progress(&events, JobStage::Probe, 1000).await;
 
     stage(&events, JobStage::Plan, "Calculando bitrate").await;
@@ -381,6 +385,7 @@ async fn render_dvd_project(
             &output_dir,
             &encoder,
             &plan,
+            options.film_pulldown,
             &events,
         ),
         render_menus(
@@ -1667,6 +1672,7 @@ async fn render_avchd_project(
     let probes = probe_report.probes;
     let mut probe_warnings = probe_report.warnings;
     ensure_sources_exist(&project, &project_dir)?;
+    ensure_trims_leave_video(&project, &probes)?;
     progress(&events, JobStage::Probe, 1000).await;
 
     stage(&events, JobStage::Plan, "Calculando bitrate HD").await;
@@ -2259,7 +2265,6 @@ async fn render_avchd_project(
     }
 
     ensure_not_cancelled(&cancel)?;
-    // The backend (tsMuxeR or the built-in one) is chosen inside this stage.
     stage(&events, JobStage::Author, "Multiplexando el disco HD").await;
     let combined_mkv = episodes_dir.join("combined.mkv");
     concat_mkv(
@@ -2326,108 +2331,48 @@ async fn render_avchd_project(
         kinodisc_avchd::AVCHD_MAX_VIDEO_KBPS
     };
     let audio_layout = audio_layout.unwrap_or_default();
-    let subtitle_track_base = 2 + audio_layout.len() as u32;
-    let meta_path = output_dir.join("meta").join("avchd.meta");
-    let meta_subtitles: Vec<AvchdMetaSubtitle<'_>> = if pgs_enabled {
+    let subtitle_languages: Vec<&str> = if pgs_enabled {
         pgs_layout
             .as_ref()
-            .map(|layout| {
-                layout
-                    .iter()
-                    .enumerate()
-                    .map(|(index, language)| AvchdMetaSubtitle {
-                        source: "combined.mkv",
-                        track: subtitle_track_base + index as u32,
-                        language,
-                    })
-                    .collect()
-            })
+            .map(|layout| layout.iter().map(String::as_str).collect())
             .unwrap_or_default()
     } else {
         Vec::new()
     };
-    let meta_audios: Vec<kinodisc_avchd::AvchdMetaAudio<'_>> = audio_layout
-        .iter()
-        .enumerate()
-        .map(
-            |(index, (language, codec))| kinodisc_avchd::AvchdMetaAudio {
-                source: "combined.mkv",
-                track: 2 + index as u32,
-                language,
-                codec: *codec,
-            },
-        )
-        .collect();
     let native_audio_languages: Vec<&str> = audio_layout
         .iter()
         .map(|(language, _)| language.as_str())
         .collect();
-    write_meta(
-        &meta_path,
-        &AvchdMetaRequest {
-            video: "combined.mkv",
-            audios: &meta_audios,
-            video_track: 1,
-            fps: config.frame_rate,
-            chapters: &chapters,
-            capacity: project.disc.capacity,
-            maxrate_kbps,
-            vbv_bufsize_kbps,
-            interactive_graphics: None,
-            subtitles: &meta_subtitles,
-        },
-    )
-    .map_err(|error| RenderError::Author(error.to_string()))?;
     let iso_path = output_dir.join("disc.iso");
-    let muxer = TsMuxer::default();
-    let mux_backend = options.mux_backend.resolve();
-    let native_muxer = (mux_backend == MuxBackend::Native)
-        .then(|| NativeBdmvMuxer::default().with_cpu(options.cpu_usage));
-    let native_subtitles: Vec<NativeMovieSubtitle<'_>> = meta_subtitles
+    let muxer = NativeBdmvMuxer::default().with_cpu(options.cpu_usage);
+    let native_subtitles: Vec<NativeMovieSubtitle<'_>> = subtitle_languages
         .iter()
-        .map(|subtitle| NativeMovieSubtitle {
+        .map(|language| NativeMovieSubtitle {
             path: None,
-            language: subtitle.language,
+            language,
         })
         .collect();
     let bdmv_dir = output_dir.join("avchd");
-    let mux_with_tsmuxer = || async {
-        muxer
-            .mux_folder(&meta_path, &bdmv_dir, &episodes_dir)
-            .await
-            .map_err(|error| RenderError::Author(error.to_string()))?;
-        let root = bdmv_dir.join("BDMV");
-        let movie_object = read_bdmv_file(&root.join("MovieObject.bdmv"))?;
-        let objects = movie_object_count(&movie_object)
-            .map_err(|error| RenderError::Menu(error.to_string()))?;
-        Ok::<_, RenderError>((objects, root))
-    };
-    let (base_object, bdmv_root) = if let Some(native) = native_muxer.clone() {
-        log(
-            &events,
-            "Multiplexando BDMV con el backend nativo de FFmpeg".to_string(),
-        )
-        .await;
-        match native
-            .mux_movie(&NativeMovieRequest {
-                video: &combined_mkv,
-                output_dir: &bdmv_dir,
-                duration_ms: timeline_ms.max(1),
-                chapters_ms: &chapters,
-                audio_languages: &native_audio_languages,
-                subtitles: &native_subtitles,
-                video_attr: config.bdmv_video_attr(),
-                video_aspect: clip_aspect_code(&config, project.disc.aspect),
-            })
-            .await
-        {
-            Ok(report) => (report.movie_objects, bdmv_dir.join("BDMV")),
-            // A failure is an error: nothing is tried again with tsMuxeR.
-            Err(error) => return Err(RenderError::Author(error.to_string())),
-        }
-    } else {
-        mux_with_tsmuxer().await?
-    };
+    log(
+        &events,
+        "Multiplexando BDMV con el backend nativo de FFmpeg".to_string(),
+    )
+    .await;
+    let base_object = muxer
+        .mux_movie(&NativeMovieRequest {
+            video: &combined_mkv,
+            output_dir: &bdmv_dir,
+            duration_ms: timeline_ms.max(1),
+            chapters_ms: &chapters,
+            audio_languages: &native_audio_languages,
+            subtitles: &native_subtitles,
+            video_attr: config.bdmv_video_attr(),
+            video_aspect: clip_aspect_code(&config, project.disc.aspect),
+        })
+        .await
+        .map_err(|error| RenderError::Author(error.to_string()))?
+        .movie_objects;
+    let bdmv_root = bdmv_dir.join("BDMV");
     let (final_iso_path, final_iso_size) = if has_menus {
         stage(
             &events,
@@ -2590,25 +2535,14 @@ async fn render_avchd_project(
                         vbv_bufsize_kbps,
                     },
                 );
-                let attach_result = if native_muxer.is_some() {
-                    attach_native_hdmv_menu(
-                        &bdmv_dir,
-                        &output_dir.join("menus").join(format!("clip-{index:02}")),
-                        &compiled.pes_packets,
-                        &menu_spec,
-                        base_object.saturating_add(index as u16),
-                    )
-                    .await
-                } else {
-                    attach_hdmv_menu(
-                        &bdmv_dir,
-                        &output_dir.join("menus").join(format!("clip-{index:02}")),
-                        &compiled.pes_packets,
-                        &menu_spec,
-                        base_object.saturating_add(index as u16),
-                    )
-                    .await
-                };
+                let attach_result = attach_native_hdmv_menu(
+                    &bdmv_dir,
+                    &output_dir.join("menus").join(format!("clip-{index:02}")),
+                    &compiled.pes_packets,
+                    &menu_spec,
+                    base_object.saturating_add(index as u16),
+                )
+                .await;
                 match attach_result {
                     Ok(report) => {
                         log(
@@ -2658,21 +2592,9 @@ async fn render_avchd_project(
                     )
                     .await;
                 }
-                if let Some(native) = &native_muxer {
-                    native
-                        .set_root_menu(&bdmv_dir, root_object)
-                        .map_err(|error| RenderError::Menu(error.to_string()))?;
-                } else {
-                    let index_path = bdmv_root.join("index.bdmv");
-                    let index = read_bdmv_file(&index_path)?;
-                    let index = set_index_menu_object(&index, root_object)
-                        .map_err(|error| RenderError::Menu(error.to_string()))?;
-                    write_bdmv_file(&index_path, &index)?;
-                    let index_backup = bdmv_root.join("BACKUP/index.bdmv");
-                    if index_backup.is_file() {
-                        write_bdmv_file(&index_backup, &index)?;
-                    }
-                }
+                muxer
+                    .set_root_menu(&bdmv_dir, root_object)
+                    .map_err(|error| RenderError::Menu(error.to_string()))?;
                 let intro_at_start = project
                     .first_play
                     .as_ref()
@@ -2724,7 +2646,7 @@ async fn render_avchd_project(
             }
         }
         ensure_not_cancelled(&cancel)?;
-        if native_muxer.is_some() && !project.disc.capacity.is_blu_ray() {
+        if !project.disc.capacity.is_blu_ray() {
             finish_avchd_tree(&bdmv_dir).map_err(|error| RenderError::Author(error.to_string()))?;
         }
         let iso = match BdmvIsoBuilder::default()
@@ -2750,10 +2672,10 @@ async fn render_avchd_project(
         (iso.iso_path, iso.size_bytes)
     } else {
         // Even menu-less AVCHD/Blu-ray discs need the same UDF 2.50 metadata
-        // partition as the interactive variant. Mux to a BDMV folder first and
-        // wrap it with our UDF writer instead of letting tsMuxeR create the ISO.
+        // partition as the interactive variant: the BDMV folder is wrapped
+        // with the same UDF writer.
         ensure_not_cancelled(&cancel)?;
-        if native_muxer.is_some() && !project.disc.capacity.is_blu_ray() {
+        if !project.disc.capacity.is_blu_ray() {
             finish_avchd_tree(&bdmv_dir).map_err(|error| RenderError::Author(error.to_string()))?;
         }
         let iso = match BdmvIsoBuilder::default()
@@ -3089,6 +3011,7 @@ async fn encode_intro(
             scale_mode: VideoScaleMode::Letterbox,
             pre_filter: intro_colour,
             full_first_pass: full_first_pass(project),
+            film_pulldown: false,
         },
         audio_tracks: first_play
             .audio
@@ -3635,6 +3558,7 @@ fn resolve_project_path(project_dir: &Path, path: &str) -> PathBuf {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn encode_episodes(
     project: &Project,
     probes: &HashMap<AssetId, MediaProbe>,
@@ -3642,6 +3566,7 @@ async fn encode_episodes(
     output: &Path,
     encoder: &DvdEncoder,
     plan: &BitratePlan,
+    film_pulldown: bool,
     events: &EventSink,
 ) -> Result<Vec<EpisodeFile>, RenderError> {
     let mut files = Vec::with_capacity(project.episodes.len());
@@ -3712,6 +3637,7 @@ async fn encode_episodes(
         let maxrate_kbps = dvd_maxrate_kbps(video_kbps, cap);
         let source_interlaced = is_interlaced(probe);
         let interlaced = picture::keeps_interlacing(&episode.filters, source_interlaced);
+        let film = film_pulldown && is_film_source(project.disc.standard, probe, source_interlaced);
         let pre_filter = kinodisc_toolchain::chain_after(
             source_colour(
                 probe,
@@ -3769,7 +3695,7 @@ async fn encode_episodes(
                 source_fingerprint: source_fp,
                 inputs_hash,
                 target_profile: format!(
-                    "dvd:{:?}:{:?}:{:?}:{:?}{}{}",
+                    "dvd:{:?}:{:?}:{:?}:{:?}{}{}{}",
                     plan.profile,
                     project.disc.standard,
                     project.disc.aspect,
@@ -3779,7 +3705,8 @@ async fn encode_episodes(
                     } else {
                         String::new()
                     },
-                    first_pass_profile(project)
+                    first_pass_profile(project),
+                    if film { ":film24" } else { "" }
                 ),
                 target_bitrate: video_kbps,
                 audio_params_hash: audio_hash,
@@ -3806,6 +3733,7 @@ async fn encode_episodes(
                 scale_mode: episode.scale_mode,
                 pre_filter: pre_filter.clone(),
                 full_first_pass: full_first_pass(project),
+                film_pulldown: film,
             },
             audio_tracks,
             trim: episode.trim,
@@ -4939,6 +4867,68 @@ fn ensure_sources_exist(project: &Project, project_dir: &Path) -> Result<(), Ren
     }
 }
 
+/// The least a trim has to leave of a video: the half second the editor asks
+/// for between the start and the end.
+const MIN_TRIMMED_MS: u64 = 500;
+
+/// A trim must leave video to encode. A start on the last instants of the
+/// file gives an empty encode (a video file is often a little longer than
+/// its pictures), and the step that fails afterwards does not say why.
+fn ensure_trims_leave_video(
+    project: &Project,
+    probes: &HashMap<AssetId, MediaProbe>,
+) -> Result<(), RenderError> {
+    for (index, episode) in project.episodes.iter().enumerate() {
+        let length = probes
+            .get(&episode.video)
+            .and_then(|probe| probe.duration_ms)
+            .or_else(|| {
+                project
+                    .assets
+                    .iter()
+                    .find(|asset| asset.id == episode.video)
+                    .and_then(|asset| asset.probe.duration_ms)
+            });
+        if let Some(problem) = trim_problem(
+            index + 1,
+            &episode.title,
+            episode.trim_start_ms,
+            episode.trim_end_ms,
+            length,
+        ) {
+            return Err(RenderError::Trim(problem));
+        }
+    }
+    Ok(())
+}
+
+/// What is wrong with the trim of episode `number`, if it leaves less than
+/// [`MIN_TRIMMED_MS`] of video. Nothing is said when the length is unknown.
+fn trim_problem(
+    number: usize,
+    title: &str,
+    start_ms: Option<u64>,
+    end_ms: Option<u64>,
+    length_ms: Option<u64>,
+) -> Option<String> {
+    let start = start_ms.filter(|start| *start > 0)?;
+    let end = match (end_ms, length_ms) {
+        (Some(end), Some(length)) => end.min(length),
+        (Some(end), None) => end,
+        (None, Some(length)) => length,
+        (None, None) => return None,
+    };
+    if start + MIN_TRIMMED_MS <= end {
+        return None;
+    }
+    let clock = |ms: u64| format!("{}:{:02}.{:03}", ms / 60_000, ms / 1000 % 60, ms % 1000);
+    Some(format!(
+        "episodio {number} «{title}»: empieza en {} y el vídeo termina en {}. Tiene que quedar al menos medio segundo: cambia el recorte en la edición del vídeo.",
+        clock(start),
+        clock(end)
+    ))
+}
+
 /// Probes saved before 1.3.5 do not say whether a video names its colour
 /// matrix. Read it now, so that every chain of this render knows (episodes,
 /// menus, intro). A file that cannot be read stays as it is: untagged.
@@ -5029,6 +5019,16 @@ fn is_interlaced(probe: &MediaProbe) -> bool {
         .and_then(|video| video.field_order.as_deref())
         .map(|order| order != "progressive")
         .unwrap_or(false)
+}
+
+/// A progressive source at the film rate (23.976 or 24 pictures per second)
+/// going to an NTSC disc: it can be stored as film pictures with repeat flags.
+fn is_film_source(standard: TvStandard, probe: &MediaProbe, interlaced: bool) -> bool {
+    standard == TvStandard::Ntsc
+        && !interlaced
+        && probe.video.as_ref().is_some_and(|video| {
+            video.frame_rate.is_valid() && (23.9..=24.1).contains(&video.frame_rate.as_f64())
+        })
 }
 
 fn is_top_field_first(probe: &MediaProbe) -> bool {
@@ -5747,141 +5747,6 @@ async fn attach_native_hdmv_menu(
     })
 }
 
-async fn attach_hdmv_menu(
-    bdmv_dir: &Path,
-    work_dir: &Path,
-    ig_packets: &[Vec<u8>],
-    spec: &MenuClipSpec,
-    expected_object: u16,
-) -> Result<MenuAttachReport, RenderError> {
-    if work_dir.exists() {
-        std::fs::remove_dir_all(work_dir)?;
-    }
-    std::fs::create_dir_all(work_dir)?;
-
-    let needed = pes_transport_packet_count(ig_packets);
-    // A finite clip loops through the MovieObject. Keeping it long enough
-    // leaves the remote responsive without relying on decoder-specific still
-    // input handling.
-    let duration_secs = spec.duration_ms.max(1) as f64 / 1000.0;
-    let dummy_path = work_dir.join("menu-pgs.sup");
-    let dummy_pgs = dummy_pgs_for_slots(spec.width, spec.height, needed)
-        .map_err(|error| RenderError::Menu(error.to_string()))?;
-    std::fs::write(&dummy_path, dummy_pgs)?;
-
-    let video_path = work_dir.join("menu.h264");
-    encode_menu_video(&video_path, spec, duration_secs).await?;
-    let audio_path = work_dir.join("menu.ac3");
-    encode_hd_menu_audio(&audio_path, spec, duration_secs).await?;
-
-    let meta_path = work_dir.join("menu.meta");
-    let mux_mode = if spec.capacity.is_blu_ray() {
-        "--blu-ray"
-    } else {
-        "--avchd"
-    };
-    // NOTE: raw H.264 takes no `track=` selector. Passing track=1 makes
-    // tsMuxeR 2.7 skip every video frame and emit an empty playlist.
-    let menu_meta = format!(
-        "MUXOPT {mux_mode} --vbv-bufsize={} --vbv-maxrate={}\n\
-         V_MPEG4/ISO/AVC, menu.h264, fps={:.3}, insertSEI, contSPS\n\
-         A_AC3, menu.ac3, lang=und\n\
-         S_HDMV/PGS, {}, track=1, lang=und\n",
-        spec.vbv_bufsize_kbps,
-        spec.maxrate_kbps,
-        spec.fps.as_f64(),
-        dummy_path.display()
-    );
-    std::fs::write(&meta_path, menu_meta)?;
-
-    let menu_bdmv = work_dir.join("bdmv");
-    TsMuxer::default()
-        .mux_folder(&meta_path, &menu_bdmv, work_dir)
-        .await
-        .map_err(|error| RenderError::Author(error.to_string()))?;
-
-    // tsMuxeR 2.7 may return before its asynchronous writer has flushed the
-    // last playlist/clip files. Wait briefly for the complete tree.
-    let menu_root = menu_bdmv.join("BDMV");
-    for _ in 0..50 {
-        if menu_root.join("STREAM/00000.m2ts").is_file()
-            && menu_root.join("CLIPINF/00000.clpi").is_file()
-            && menu_root.join("PLAYLIST/00000.mpls").is_file()
-        {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-
-    let menu_clpi = read_bdmv_file(&menu_root.join("CLIPINF/00000.clpi"))?;
-    let menu_mpls = read_bdmv_file(&menu_root.join("PLAYLIST/00000.mpls"))?;
-
-    let bdmv_root = bdmv_dir.join("BDMV");
-    let playlist = next_bdmv_number(&bdmv_root.join("PLAYLIST"), "mpls")?;
-    let stream_number = next_bdmv_number(&bdmv_root.join("STREAM"), "m2ts")?;
-    let clip_number = next_bdmv_number(&bdmv_root.join("CLIPINF"), "clpi")?;
-    let clip = stream_number.max(clip_number);
-    let stream_path = bdmv_root.join("STREAM").join(format!("{clip:05}.m2ts"));
-    let source_packets = kinodisc_hdmv::inject_ig_into_menu_m2ts_file(
-        &menu_root.join("STREAM/00000.m2ts"),
-        &stream_path,
-        ig_packets,
-        kinodisc_hdmv::IG_PID,
-    )
-    .map_err(|error| {
-        let _ = std::fs::remove_file(&stream_path);
-        RenderError::Menu(error.to_string())
-    })?;
-    let patched_clpi = patch_menu_clpi(&menu_clpi, source_packets)
-        .map_err(|error| RenderError::Menu(error.to_string()))?;
-    let patched_mpls = patch_menu_mpls(&menu_mpls, clip, None)
-        .map_err(|error| RenderError::Menu(error.to_string()))?;
-    write_bdmv_file(
-        &bdmv_root.join("CLIPINF").join(format!("{clip:05}.clpi")),
-        &patched_clpi,
-    )?;
-    write_bdmv_file(
-        &bdmv_root
-            .join("PLAYLIST")
-            .join(format!("{playlist:05}.mpls")),
-        &patched_mpls,
-    )?;
-
-    // Keep the backup tree consistent with the main one. Players and strict
-    // validators may fall back to BACKUP/ when the primary files are damaged.
-    for (directory, name, bytes) in [
-        ("PLAYLIST", format!("{playlist:05}.mpls"), &patched_mpls),
-        ("CLIPINF", format!("{clip:05}.clpi"), &patched_clpi),
-    ] {
-        let backup = bdmv_root.join("BACKUP").join(directory);
-        if backup.is_dir() {
-            write_bdmv_file(&backup.join(name), bytes)?;
-        }
-    }
-
-    let movie_object_path = bdmv_root.join("MovieObject.bdmv");
-    let movie_object = read_bdmv_file(&movie_object_path)?;
-    let (movie_object, object_index) = append_menu_movie_object(&movie_object, playlist)
-        .map_err(|error| RenderError::Menu(error.to_string()))?;
-    if object_index != expected_object {
-        return Err(RenderError::Menu(format!(
-            "el objeto de menú esperado era {expected_object}, pero se creó {object_index}"
-        )));
-    }
-    write_bdmv_file(&movie_object_path, &movie_object)?;
-    let movie_object_backup = bdmv_root.join("BACKUP/MovieObject.bdmv");
-    if movie_object_backup.is_file() {
-        write_bdmv_file(&movie_object_backup, &movie_object)?;
-    }
-
-    Ok(MenuAttachReport {
-        playlist,
-        clip,
-        object: object_index,
-        ig_packets: needed,
-    })
-}
-
 fn menu_video_clip_duration(in_ms: u64, out_ms: Option<u64>) -> Option<f64> {
     out_ms
         .filter(|out| *out > in_ms)
@@ -6043,7 +5908,8 @@ async fn encode_menu_video_with_transition(
         command.args(["-x264opts", "fake-interlaced=1:pic-struct=1"]);
     }
     command.args(["-progress", "pipe:1", "-nostats"]);
-    command.args(["-f", menu_video_format(path)]).arg(path);
+    // Matroska keeps the timestamps the muxer needs (a raw H.264 stream has none).
+    command.args(["-f", "matroska"]).arg(path);
     run_menu_video(command, path).await
 }
 
@@ -6178,7 +6044,8 @@ async fn encode_menu_video(
         command.args(["-x264opts", "fake-interlaced=1:pic-struct=1"]);
     }
     command.args(["-progress", "pipe:1", "-nostats"]);
-    command.args(["-f", menu_video_format(path)]).arg(path);
+    // Matroska keeps the timestamps the muxer needs (a raw H.264 stream has none).
+    command.args(["-f", "matroska"]).arg(path);
     run_menu_video(command, path).await
 }
 
@@ -6244,19 +6111,6 @@ async fn encode_hd_menu_audio(
     // Pass the OsStr path itself; never fall back to a CWD-relative name.
     command.arg(path);
     run_menu_ffmpeg(command, path, "audio").await
-}
-
-/// Output container for an HD menu video: raw H.264 for tsMuxeR, Matroska
-/// (with timestamps) for the native muxer.
-fn menu_video_format(path: &Path) -> &'static str {
-    if path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("mkv"))
-    {
-        "matroska"
-    } else {
-        "h264"
-    }
 }
 
 /// A menu clip that shows no new frame, time or byte for this long is stuck
@@ -6587,6 +6441,25 @@ async fn progress(events: &EventSink, stage: JobStage, permille: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_trim_that_leaves_no_video_is_named() {
+        // A start on the last instants of an 8.021 s file.
+        let problem = trim_problem(1, "Playa", Some(8008), None, Some(8021)).expect("refused");
+        assert!(problem.contains("episodio 1 «Playa»"), "{problem}");
+        assert!(
+            problem.contains("0:08.008") && problem.contains("0:08.021"),
+            "{problem}"
+        );
+        // A trim end past the file counts as the end of the file.
+        assert!(trim_problem(2, "x", Some(7800), Some(9000), Some(8021)).is_some());
+        // Half a second left is enough; so is no trim, or an unknown length.
+        assert!(trim_problem(1, "x", Some(7521), None, Some(8021)).is_none());
+        assert!(trim_problem(1, "x", Some(1960), Some(5964), Some(8021)).is_none());
+        assert!(trim_problem(1, "x", None, None, Some(8021)).is_none());
+        assert!(trim_problem(1, "x", Some(0), None, Some(100)).is_none());
+        assert!(trim_problem(1, "x", Some(9000), None, None).is_none());
+    }
 
     fn test_directory(label: &str) -> PathBuf {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

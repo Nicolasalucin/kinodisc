@@ -209,9 +209,6 @@ async fn renders_bd25_with_native_hdmv_menu() {
     assert!(output.join("avchd/BDMV/PLAYLIST/00001.mpls").is_file());
     assert!(output.join("avchd/BDMV/CLIPINF/00001.clpi").is_file());
     assert!(output.join("avchd/BDMV/STREAM/00001.m2ts").is_file());
-    // tsMuxeR writes a .meta file. Kinodisc muxes the disc itself, also on a
-    // host where tsMuxeR is installed, so there is none.
-    assert!(!output.join("menus/clip-00/menu.meta").exists());
     let _ = std::fs::remove_dir_all(output);
 }
 
@@ -292,12 +289,8 @@ async fn renders_bd25_with_nested_hdmv_menus() {
     }
     // The root menu uses a video background, so its H.264 clip must be
     // non-trivial and High profile.
-    // Raw H.264 for tsMuxeR, Matroska (with timestamps) for the native muxer.
-    let video = ["menu.h264", "menu.mkv"]
-        .iter()
-        .map(|name| output.join("menus/clip-00").join(name))
-        .find(|path| path.is_file())
-        .expect("menu video");
+    let video = output.join("menus/clip-00/menu.mkv");
+    assert!(video.is_file(), "menu video");
     assert!(std::fs::metadata(&video).unwrap().len() > 10_000);
 
     let movie_object = std::fs::read(bdmv.join("MovieObject.bdmv")).expect("movie object");

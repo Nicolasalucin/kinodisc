@@ -6,6 +6,7 @@
 
 pub mod bdmv;
 pub mod dvd;
+mod dvd_video;
 pub mod extract;
 pub mod inspect;
 pub mod menu;
@@ -123,7 +124,9 @@ pub fn verify_iso(path: &Path, deep: bool) -> Result<VerifyReport, VerifyError> 
     };
     match (profile, reader.as_ref()) {
         (VerifyProfile::Bdmv, Some(reader)) => bdmv::verify(reader, &mut checks),
-        (VerifyProfile::DvdVideo, Some(reader)) => dvd::verify(reader, size_bytes, &mut checks),
+        (VerifyProfile::DvdVideo, Some(reader)) => {
+            dvd::verify(reader, size_bytes, deep, &mut checks)
+        }
         (VerifyProfile::Auto, _) => checks.fail(
             "PROFILE-UNKNOWN",
             "La imagen no contiene VIDEO_TS/VIDEO_TS.IFO ni BDMV/index.bdmv.",
